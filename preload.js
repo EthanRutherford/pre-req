@@ -215,17 +215,16 @@ function build(root, ...entries) {
 	const promises = entries.map((entry) => buildCore(absRoot, entry));
 
 	Promise.all(promises).then(() => {
-		fs.writeFile(absRoot + "/deps.json", JSON.stringify(cache), (error) => {
-			if (error) {
-				console.error(error);
-			}
-		});
-		if (Object.keys(packages).length === 0) return;
-
 		const packageDir = absRoot + "/preload_modules";
 		if (!fs.existsSync(packageDir)) {
 			fs.mkdirSync(packageDir);
 		}
+
+		fs.writeFile(packageDir + "/deps.json", JSON.stringify(cache), (error) => {
+			if (error) {
+				console.error(error);
+			}
+		});
 
 		for (const key of Object.keys(packages)) {
 			const filename = `${packageDir}/${key}.json`;
@@ -238,11 +237,15 @@ function build(root, ...entries) {
 	});
 }
 
-//scripts is the path to the scripts folder (where preload web will be copied to)
-function init(scripts) {
-	const dir = path.resolve(scripts);
+//root is the relative path to the webroot folder (where preload web will be copied to)
+function init(root) {
+	const absRoot = path.resolve(root);
+	const packageDir = absRoot + "/preload_modules";
+	if (!fs.existsSync(packageDir)) {
+		fs.mkdirSync(packageDir);
+	}
 	const preloadWeb = require.resolve("./web/preload");
-	const preloadScript = dir + "/preload.js";
+	const preloadScript = packageDir + "/preload.js";
 	fs.createReadStream(preloadWeb).pipe(fs.createWriteStream(preloadScript));
 }
 

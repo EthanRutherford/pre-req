@@ -84,10 +84,14 @@
 		//and return the constructed executor
 		return new Function(code)();
 	}
-	//executes the code, and returns the result of module.exports
-	function execute(code, src, pack) {
+	//executes the code, and sets module exports
+	function execute(code, src, obj, pack) {
 		//initialize the module object
-		const module = {exports: {}};
+		const module = {};
+		Object.defineProperty(module, "exports", {
+			get: () => obj[sModule],
+			set: (value) => obj[sModule] = value,
+		});
 		//create the executor
 		const executor = getModuleExecutor(code, src, pack.name);
 		//construct and execute the function
@@ -147,7 +151,8 @@
 
 		if (!data.obj[sModule]) {
 			if (data.url.endsWith(".js")) {
-				data.obj[sModule] = execute(data.obj[sCode], data.url, pack);
+				data.obj[sModule] = {};
+				execute(data.obj[sCode], data.url, data.obj, pack);
 			} else if (data.url.endsWith(".json")) {
 				data.obj[sModule] = JSON.parse(data.obj[sCode]);
 			}
@@ -264,11 +269,11 @@
 		throw new Error("non-module preloads must specify file type");
 	}
 	//call preloadCore on all, return promise.all
-	function preloadAll(array, relativeTo) {
+	function preloadAll(array, relativeTo, set) {
 		if (!array) {
 			return Promise.resolve();
 		}
-		const promises = array.map((item) => preloadCore(item, relativeTo));
+		const promises = array.map((item) => preloadCore(item, relativeTo, set));
 		return Promise.all(promises);
 	}
 	//you can use this to pre-define a virtual filesystem with dependencies

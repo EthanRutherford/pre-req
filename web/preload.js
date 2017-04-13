@@ -246,13 +246,12 @@
 		//preload a package
 		if (isPackage(src)) {
 			const name = src.split("/")[0];
-			if (set.has(name)) {
-				return Promise.resolve();
-			}
+			if (set.has(name)) return Promise.resolve();
 			return preloadPackage(name, set);
 		}
 
 		const url = parseUrl(src, relativeTo);
+		if (set.has(url)) return Promise.resolve();
 		if (src.endsWith(".json")) {
 			return preloadJSON(url, set);
 		}

@@ -1,0 +1,15 @@
+{
+  "name": "pre-req",
+  "version": "1.0.0",
+  "description": "Build dependency graphs and bundle npm modules to provide an implementation of require in the browser",
+  "main": "preload.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "detective": "^4.5.0",
+    "uglify-js-harmony": "^2.7.5"
+  }
+}

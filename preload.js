@@ -220,7 +220,7 @@ function build(root, ...entries) {
 			fs.mkdirSync(packageDir);
 		}
 
-		fs.writeFile(packageDir + "/deps.json", JSON.stringify(cache), (error) => {
+		fs.writeFile(packageDir + "/.deps.json", JSON.stringify(cache), (error) => {
 			if (error) {
 				console.error(error);
 			}

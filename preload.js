@@ -51,7 +51,10 @@ function hasPath(data, pathName) {
 	return true;
 }
 
-function resolveFileRelative(file, next) {
+function resolveFileRelative(root, file, next) {
+	if (next[0] === "/") {
+		return require.resolve(root + next);
+	}
 	const dir = path.dirname(file);
 	return require.resolve(path.resolve(dir, next));
 }
@@ -130,7 +133,7 @@ function parsePackage(pack, absRoot, absFile, relFile) {
 			for (const dep of data.deps) {
 				if (!isPackage(dep)) {
 					//normal dependency
-					const absDep = resolveFileRelative(absFile, dep);
+					const absDep = resolveFileRelative(absRoot, absFile, dep);
 					const relDep = absoluteToRelative(absRoot, absDep);
 					promises.push(parsePackage(pack, absRoot, absDep, relDep));
 				} else {
@@ -180,7 +183,7 @@ function parseTree(absRoot, absFile, relFile) {
 			for (const dep of data.deps) {
 				if (!isPackage(dep)) {
 					//normal dependency
-					const absDep = resolveFileRelative(absFile, dep);
+					const absDep = resolveFileRelative(absRoot, absFile, dep);
 					const relDep = absoluteToRelative(absRoot, absDep);
 					pathObj[sDeps].add(relDep);
 					promises.push(parseTree(absRoot, absDep, relDep));
@@ -198,7 +201,7 @@ function parseTree(absRoot, absFile, relFile) {
 }
 
 function buildCore(absRoot, entry) {
-	const absFile = require.resolve(absRoot + entry);
+	const absFile = resolveFileRelative(absRoot, null, entry);
 	const relFile = absoluteToRelative(absRoot, absFile);
 
 	return parseTree(absRoot, absFile, relFile);

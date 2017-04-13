@@ -13,6 +13,9 @@
     "uglify-js-harmony": "^2.7.5"
   },
   "devDependencies": {},
+  "bin": {
+    "preload": "./preload.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EthanRutherford/pre-req.git"

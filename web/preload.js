@@ -195,9 +195,7 @@
 				} else {
 					response.text().then((text) => {
 						obj[sCode] = text;
-					});
-					response.json().then((data) => {
-						obj[sModule] = data;
+						obj[sModule] = JSON.parse(text);
 						resolve();
 					});
 				}

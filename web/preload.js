@@ -2,7 +2,7 @@
 	//Regex for getting preload directives
 	const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 	//virtual filesystem
-	const cache = {files: {}, packages: {}};
+	const cache = {files: {}, packages: {}, outputDir: "/"};
 	//symbols
 	const sDeps = "/deps";
 	const sCode = "/code";
@@ -167,7 +167,7 @@
 		}
 
 		const promise = new Promise((resolve, reject) => {
-			load(`/preload_modules/${name}.json`).then((response) => {
+			load(`${cache.outputDir}preload_modules/${name}.json`).then((response) => {
 				if (!response.ok) {
 					reject(response.statusText);
 				} else {

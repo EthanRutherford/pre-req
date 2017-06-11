@@ -15,8 +15,9 @@ const sCode = "/code";
 
 const env = process.env.NODE_ENV; //eslint-disable-line no-process-env
 const minifyOptions = {
-	dead_code: true, //eslint-disable-line camelcase
-	fromString: true,
+	compress: {
+		dead_code: true, //eslint-disable-line camelcase
+	},
 };
 
 class JSONSet extends Set {

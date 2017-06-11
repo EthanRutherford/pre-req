@@ -1,6 +1,6 @@
 {
   "name": "pre-req",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Build dependency graphs and bundle npm modules to provide an implementation of require in the browser",
   "main": "preload.js",
   "scripts": {
@@ -10,7 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "detective": "^4.5.0",
-    "uglify-js-harmony": "^2.7.5"
+    "uglify-es": "^3.0.15"
   },
   "devDependencies": {},
   "bin": {

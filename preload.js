@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const detective = require("detective");
-const {minify} = require("uglify-js-harmony");
+const {minify} = require("uglify-es");
 const path = require("path");
 const fs = require("fs");
 

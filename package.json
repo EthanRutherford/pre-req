@@ -1,10 +1,10 @@
 {
   "name": "pre-req",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "Build dependency graphs and bundle npm modules to provide an implementation of require in the browser",
   "main": "preload.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node preload.js build"
   },
   "author": "Ethan Rutherford",
   "license": "ISC",

@@ -136,10 +136,10 @@
 			//swap filesystem
 			const [packname, ...rest] = src.split("/");
 			const file = rest.join("/");
-			if (!cache.packages[packname]) {
+			pack = cache.packages[packname];
+			if (!pack || !pack.files) {
 				throw new Error(`package "${packname}" required without being preloaded`);
 			}
-			pack = cache.packages[packname];
 			relativeTo = "/";
 			src = file || pack.entry;
 		}

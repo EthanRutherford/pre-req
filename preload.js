@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-console */
 
 const detective = require("detective");
 const {minify} = require("uglify-es");
@@ -8,8 +9,8 @@ const fs = require("fs");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
-const cache = {files: {}, packages: {}, outputDir: "/"};
-const packages = {};
+let cache = {};
+let packages = {};
 
 const sDeps = "/deps";
 const sCode = "/code";
@@ -42,7 +43,7 @@ function addPath(data, pathName) {
 
 function hasPath(data, pathName) {
 	pathName = pathName.substr(1);
-	if (pathName === "") return data;
+	if (pathName === "") return true;
 	const parts = pathName.split("/");
 	for (const part of parts) {
 		if (!(part in data)) {
@@ -55,10 +56,12 @@ function hasPath(data, pathName) {
 
 function resolveFileRelative(root, file, next) {
 	if (next[0] === "/") {
-		return require.resolve(root + next);
+		next = root + next;
+	} else {
+		const dir = path.dirname(file);
+		next = path.resolve(dir, next);
 	}
-	const dir = path.dirname(file);
-	return require.resolve(path.resolve(dir, next));
+	return require.resolve(next);
 }
 
 function getPackageRoot(absFile) {
@@ -160,16 +163,14 @@ function buildPackage(name, entry) {
 	}
 	const absRoot = getPackageRoot(absFile);
 	const relFile = absoluteToRelative(absRoot, absFile);
-	if (!(name in cache.packages)) {
+	if (!(name in packages)) {
 		const absMainEntry = require.resolve(absRoot);
 		const mainEntry = absoluteToRelative(absRoot, absMainEntry);
 
-		cache.packages[name] = {name, "/deps": new JSONSet()};
 		packages[name] = {
-			name,
-			files: {},
-			"/deps": cache.packages[name][sDeps],
 			entry: mainEntry,
+			files: {},
+			[sDeps]: new JSONSet(),
 		};
 	}
 
@@ -177,10 +178,10 @@ function buildPackage(name, entry) {
 }
 
 function parseTree(absRoot, absFile, relFile) {
-	if (hasPath(cache.files, relFile) || !relFile.endsWith(".js")) {
+	if (relFile in cache || !relFile.endsWith(".js")) {
 		return Promise.resolve();
 	}
-	const pathObj = addPath(cache.files, relFile);
+	const pathObj = cache[relFile] = {};
 
 	return new Promise((resolve) => {
 		getDependencies(absFile).then((data) => {
@@ -214,34 +215,85 @@ function buildCore(absRoot, entry) {
 	return parseTree(absRoot, absFile, relFile);
 }
 
+function rebuildCacheAndVFS(absRoot, absDir, entries) {
+	let outputDir = absoluteToRelative(absRoot, absDir);
+	outputDir += outputDir.endsWith("/") ? "" : "/";
+
+	const clonedCache = {};
+	const clonedPackages = {};
+	const vfs = {files: {}, packages: {}, outputDir};
+
+	for (const entry of entries) {
+		const absFile = resolveFileRelative(absRoot, null, entry);
+		const relFile = absoluteToRelative(absRoot, absFile);
+
+		const stack = [relFile];
+		while (stack.length > 0) {
+			const curFile = stack.pop();
+			let deps;
+
+			if (curFile.startsWith("/")) {
+				if (curFile in clonedCache) {
+					continue;
+				}
+				clonedCache[curFile] = cache[curFile];
+				Object.assign(addPath(vfs.files, curFile), cache[curFile]);
+
+				deps = cache[curFile][sDeps];
+			} else {
+				if (curFile in clonedPackages) {
+					continue;
+				}
+				clonedPackages[curFile] = packages[curFile];
+				vfs.packages[curFile] = {[sDeps]: packages[curFile][sDeps]};
+
+				deps = packages[curFile][sDeps];
+			}
+
+			stack.push(...deps);
+		}
+	}
+
+	cache = clonedCache;
+	packages = clonedPackages;
+	return vfs;
+}
+
+function writeDeps(packageDir, vfs) {
+	fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs), (error) => {
+		if (error) {
+			console.error(error);
+		}
+	});
+}
+
+function writePackages(packageDir) {
+	for (const key of Object.keys(packages)) {
+		const filename = `${packageDir}/${key}.json`;
+		fs.writeFile(filename, JSON.stringify(packages[key]), (error) => {
+			if (error) {
+				console.error(error);
+			}
+		});
+	}
+}
+
 //webroot is the relative path to the webroot folder
 //entrypoints are paths to the entry points, relative to webroot
 //outputDir is directory where preload_modules will be stored
 function build({webroot, entryPoints, outputDir}) {
 	const absRoot = path.resolve(webroot);
 	const absDir = path.resolve(outputDir);
-	cache.outputDir = absoluteToRelative(absRoot, absDir);
-	cache.outputDir += cache.outputDir.endsWith("/") ? "" : "/";
 
 	const promises = entryPoints.map((entry) => buildCore(absRoot, entry));
 
 	Promise.all(promises).then(() => {
 		const packageDir = absDir + "/preload_modules";
 
-		fs.writeFile(packageDir + "/.deps.json", JSON.stringify(cache), (error) => {
-			if (error) {
-				console.error(error);
-			}
-		});
+		const vfs = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
-		for (const key of Object.keys(packages)) {
-			const filename = `${packageDir}/${key}.json`;
-			fs.writeFile(filename, JSON.stringify(packages[key]), (error) => {
-				if (error) {
-					console.error(error);
-				}
-			});
-		}
+		writeDeps(packageDir, vfs);
+		writePackages(packageDir);
 	});
 }
 
@@ -298,5 +350,3 @@ function main(command) {
 }
 
 main(...process.argv.slice(2));
-
-// fs.watch(filename[, options][, listener])

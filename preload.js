@@ -2,6 +2,7 @@
 
 const detective = require("detective");
 const {minify} = require("uglify-es");
+const nodeLibs = require("node-libs-browser");
 const path = require("path");
 const fs = require("fs");
 
@@ -60,12 +61,9 @@ function resolveFileRelative(root, file, next) {
 	return require.resolve(path.resolve(dir, next));
 }
 
-function getPackageRoot(packageName, absFile) {
-	let absRoot = absFile;
-	while (!absRoot.endsWith(packageName)) {
-		absRoot = path.dirname(absRoot);
-	}
-	return absRoot;
+function getPackageRoot(absFile) {
+	const parts = absFile.replace(/\\/g, "/").split("/");
+	return parts.slice(0, parts.findIndex((x) => x === "node_modules") + 2).join("/");
 }
 
 function isPackage(name) {
@@ -151,11 +149,19 @@ function parsePackage(pack, absRoot, absFile, relFile) {
 }
 
 function buildPackage(name, entry) {
-	const absFile = require.resolve(entry);
-	const absRoot = getPackageRoot(name, absFile);
+	let absFile;
+	if (name in nodeLibs) {
+		if (!nodeLibs[name]) {
+			throw new Error(`${name} does not have a browser implementation`);
+		}
+		absFile = nodeLibs[name];
+	} else {
+		absFile = require.resolve(entry);
+	}
+	const absRoot = getPackageRoot(absFile);
 	const relFile = absoluteToRelative(absRoot, absFile);
 	if (!(name in cache.packages)) {
-		const absMainEntry = require.resolve(name);
+		const absMainEntry = require.resolve(absRoot);
 		const mainEntry = absoluteToRelative(absRoot, absMainEntry);
 
 		cache.packages[name] = {name, "/deps": new JSONSet()};

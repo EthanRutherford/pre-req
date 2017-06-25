@@ -125,7 +125,7 @@ function parsePackage(pack, absRoot, absFile, relFile) {
 		});
 	}
 
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		getDependencies(absFile).then((data) => {
 			const code = data.code.replace(envRegex, env);
 			const minified = minify(code, minifyOptions);
@@ -146,8 +146,8 @@ function parsePackage(pack, absRoot, absFile, relFile) {
 				}
 			}
 
-			Promise.all(promises).then(resolve);
-		});
+			Promise.all(promises).then(resolve).catch(reject);
+		}).catch(reject);
 	});
 }
 
@@ -181,30 +181,38 @@ function parseTree(absRoot, absFile, relFile) {
 	if (relFile in cache || !relFile.endsWith(".js")) {
 		return Promise.resolve();
 	}
-	const pathObj = cache[relFile] = {};
+	const obj = cache[relFile] = {};
 
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		getDependencies(absFile).then((data) => {
-			pathObj[sDeps] = new JSONSet();
+			obj[sDeps] = new JSONSet();
 
 			const promises = [];
 			for (const dep of data.deps) {
 				if (!isPackage(dep)) {
 					//normal dependency
-					const absDep = resolveFileRelative(absRoot, absFile, dep);
-					const relDep = absoluteToRelative(absRoot, absDep);
-					pathObj[sDeps].add(relDep);
-					promises.push(parseTree(absRoot, absDep, relDep));
+					try {
+						const absDep = resolveFileRelative(absRoot, absFile, dep);
+						const relDep = absoluteToRelative(absRoot, absDep);
+						obj[sDeps].add(relDep);
+						promises.push(parseTree(absRoot, absDep, relDep));
+					} catch (error) {
+						console.error(error.stack);
+					}
 				} else {
 					//node_module
 					const packageName = dep.split("/")[0];
-					pathObj[sDeps].add(packageName);
-					promises.push(buildPackage(packageName, dep));
+					try {
+						promises.push(buildPackage(packageName, dep));
+						obj[sDeps].add(packageName);
+					} catch (error) {
+						console.error(error.stack);
+					}
 				}
 			}
 
-			Promise.all(promises).then(resolve);
-		});
+			Promise.all(promises).then(resolve).catch(reject);
+		}).catch(reject);
 	});
 }
 
@@ -294,7 +302,7 @@ function build({webroot, entryPoints, outputDir}) {
 
 		writeDeps(packageDir, vfs);
 		writePackages(packageDir);
-	});
+	}).catch((error) => console.error(error.stack));
 }
 
 //outputDir is directory where preload_modules will be stored

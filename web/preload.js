@@ -301,6 +301,9 @@
 			return requireCore(src, this.location.pathname);
 		});
 	};
+	//add a definition for global
+	this.global = this;
+	//export the module to this.preload
 	this.preload = {define, main, require};
 })();
 

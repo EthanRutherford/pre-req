@@ -5,7 +5,7 @@ const detective = require("detective");
 const {minify} = require("uglify-es");
 const nodeLibs = require("node-libs-browser");
 const path = require("path");
-const fs = require("fs");
+const fs = require("./async-fs");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
@@ -79,76 +79,68 @@ function absoluteToRelative(root, file) {
 	return "/" + rel;
 }
 
-function getDependencies(src) {
-	return new Promise((resolve) => {
-		fs.readFile(src, (error, data) => {
-			if (error) {
-				console.error("file read error", error);
-				resolve({});
-			} else {
-				data = data.toString();
-				const deps = new Set(detective(data));
-				let match;
-				while ((match = preloadRegex.exec(data))) {
-					const [, dep] = match;
-					deps.add(dep.trim());
-				}
-				resolve({code: data, deps: [...deps]});
-			}
-		});
-	});
+async function getDependencies(src) {
+	try {
+		const data = (await fs.readFile(src)).toString();
+		const deps = new Set(detective(data));
+		let match;
+		while ((match = preloadRegex.exec(data))) {
+			const [, dep] = match;
+			deps.add(dep.trim());
+		}
+		return {code: data, deps: [...deps]};
+	} catch (error) {
+		console.error("file read error", error);
+		return {};
+	}
 }
 
-function getJSON(file) {
-	return new Promise((resolve) => {
-		fs.readFile(file, (error, data) => {
-			if (error) {
-				console.error("file read error", error);
-				resolve("");
-			} else {
-				resolve(JSON.stringify(JSON.parse(data)));
-			}
-		});
-	});
+async function getJSON(file) {
+	try {
+		return JSON.stringify(JSON.parse(await fs.readFile(file)));
+	} catch (error) {
+		console.error("file read error", error);
+		return "";
+	}
 }
 
-function parsePackage(pack, absRoot, absFile, relFile) {
+async function parsePackage(pack, absRoot, absFile, relFile) {
 	if (hasPath(pack.files, relFile)) {
-		return Promise.resolve();
+		return;
 	}
 	const pathObj = addPath(pack.files, relFile);
 
 	//don't parse deps or minify json files
 	if (relFile.endsWith(".json")) {
-		return getJSON(absFile).then((json) => {
-			pathObj[sCode] = json;
-		});
+		pathObj[sCode] = await getJSON(absFile);
+		return;
 	}
 
-	return new Promise((resolve, reject) => {
-		getDependencies(absFile).then((data) => {
-			const code = data.code.replace(envRegex, env);
-			const minified = minify(code, minifyOptions);
-			pathObj[sCode] = minified.code;
+	const data = await getDependencies(absFile);
+	const code = data.code.replace(envRegex, env);
+	const minified = minify(code, minifyOptions);
+	pathObj[sCode] = minified.code;
 
-			const promises = [];
-			for (const dep of data.deps) {
-				if (!isPackage(dep)) {
-					//normal dependency
-					const absDep = resolveFileRelative(absRoot, absFile, dep);
-					const relDep = absoluteToRelative(absRoot, absDep);
-					promises.push(parsePackage(pack, absRoot, absDep, relDep));
-				} else {
-					//node_module
-					const packageName = dep.split("/")[0];
-					pack[sDeps].add(packageName);
-					promises.push(buildPackage(packageName, dep));
-				}
+	const jobs = [];
+	for (const dep of data.deps) {
+		if (!isPackage(dep)) {
+			//normal dependency
+			const absDep = resolveFileRelative(absRoot, absFile, dep);
+			const relDep = absoluteToRelative(absRoot, absDep);
+			jobs.push(parsePackage(pack, absRoot, absDep, relDep));
+		} else {
+			//node_module
+			try {
+				const packageName = dep.split("/")[0];
+				pack[sDeps].add(packageName);
+				jobs.push(buildPackage(packageName, dep));
+			} catch (error) {
+				console.error(`ERROR: ${error.message}`);
 			}
+		}
+	}
 
-			Promise.all(promises).then(resolve).catch(reject);
-		}).catch(reject);
-	});
+	await Promise.all(jobs);
 }
 
 function buildPackage(name, entry) {
@@ -177,50 +169,47 @@ function buildPackage(name, entry) {
 	return parsePackage(packages[name], absRoot, absFile, relFile);
 }
 
-function parseTree(absRoot, absFile, relFile) {
+async function parseTree(absRoot, absFile, relFile) {
 	if (relFile in cache || !relFile.endsWith(".js")) {
-		return Promise.resolve();
+		return;
 	}
 	const obj = cache[relFile] = {};
 
-	return new Promise((resolve, reject) => {
-		getDependencies(absFile).then((data) => {
-			obj[sDeps] = new JSONSet();
+	const data = await getDependencies(absFile);
+	obj[sDeps] = new JSONSet();
 
-			const promises = [];
-			for (const dep of data.deps) {
-				if (!isPackage(dep)) {
-					//normal dependency
-					try {
-						const absDep = resolveFileRelative(absRoot, absFile, dep);
-						const relDep = absoluteToRelative(absRoot, absDep);
-						obj[sDeps].add(relDep);
-						promises.push(parseTree(absRoot, absDep, relDep));
-					} catch (error) {
-						console.error(error.stack);
-					}
-				} else {
-					//node_module
-					const packageName = dep.split("/")[0];
-					try {
-						promises.push(buildPackage(packageName, dep));
-						obj[sDeps].add(packageName);
-					} catch (error) {
-						console.error(error.stack);
-					}
-				}
+	const jobs = [];
+	for (const dep of data.deps) {
+		if (!isPackage(dep)) {
+			//normal dependency
+			try {
+				const absDep = resolveFileRelative(absRoot, absFile, dep);
+				const relDep = absoluteToRelative(absRoot, absDep);
+				obj[sDeps].add(relDep);
+				jobs.push(parseTree(absRoot, absDep, relDep));
+			} catch (error) {
+				console.error(`ERROR: ${error.message}`);
 			}
+		} else {
+			//node_module
+			const packageName = dep.split("/")[0];
+			try {
+				jobs.push(buildPackage(packageName, dep));
+				obj[sDeps].add(packageName);
+			} catch (error) {
+				console.error(`ERROR: ${error.message}`);
+			}
+		}
+	}
 
-			Promise.all(promises).then(resolve).catch(reject);
-		}).catch(reject);
-	});
+	await Promise.all(jobs);
 }
 
-function buildCore(absRoot, entry) {
+async function buildCore(absRoot, entry) {
 	const absFile = resolveFileRelative(absRoot, null, entry);
 	const relFile = absoluteToRelative(absRoot, absFile);
 
-	return parseTree(absRoot, absFile, relFile);
+	await parseTree(absRoot, absFile, relFile);
 }
 
 function rebuildCacheAndVFS(absRoot, absDir, entries) {
@@ -267,62 +256,62 @@ function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	return vfs;
 }
 
-function writeDeps(packageDir, vfs) {
-	fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs), (error) => {
-		if (error) {
-			console.error(error);
-		}
-	});
+async function writeDeps(packageDir, vfs) {
+	try {
+		await fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs));
+	} catch (error) {
+		console.error(error);
+	}
 }
 
-function writePackages(packageDir) {
+async function writePackages(packageDir) {
 	for (const key of Object.keys(packages)) {
 		const filename = `${packageDir}/${key}.json`;
-		fs.writeFile(filename, JSON.stringify(packages[key]), (error) => {
-			if (error) {
-				console.error(error);
-			}
-		});
+		try {
+			await fs.writeFile(filename, JSON.stringify(packages[key]));
+		} catch (error) {
+			console.error(error);
+		}
 	}
 }
 
 //webroot is the relative path to the webroot folder
 //entrypoints are paths to the entry points, relative to webroot
 //outputDir is directory where preload_modules will be stored
-function build({webroot, entryPoints, outputDir}) {
+async function build({webroot, entryPoints, outputDir}) {
 	const absRoot = path.resolve(webroot);
 	const absDir = path.resolve(outputDir);
 
-	const promises = entryPoints.map((entry) => buildCore(absRoot, entry));
-
-	Promise.all(promises).then(() => {
+	try {
+		await Promise.all(entryPoints.map((entry) => buildCore(absRoot, entry)));
 		const packageDir = absDir + "/preload_modules";
 
 		const vfs = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
-		writeDeps(packageDir, vfs);
-		writePackages(packageDir);
-	}).catch((error) => console.error(error.stack));
+		await writeDeps(packageDir, vfs);
+		await writePackages(packageDir);
+	} catch (error) {
+		console.error(error.stack);
+	}
 }
 
 //outputDir is directory where preload_modules will be stored
-function init({outputDir}) {
+async function init({outputDir}) {
 	const absDir = path.resolve(outputDir);
 	const packageDir = absDir + "/preload_modules";
-	if (!fs.existsSync(packageDir)) {
-		fs.mkdirSync(packageDir);
+	try {
+		await fs.mkdir(packageDir);
+	} catch (error) {
+		//directory already exists; no problem here
 	}
 	const preloadWeb = require.resolve("./web/preload");
 	const preloadScript = packageDir + "/preload.js";
 	fs.createReadStream(preloadWeb).pipe(fs.createWriteStream(preloadScript));
 }
 
-function loadConfig() {
+async function loadConfig() {
 	const configPath = path.resolve("preload.config.json");
-	if (!fs.existsSync(configPath)) {
-		throw new Error("no config file (preload.config.json)");
-	}
-	const config = JSON.parse(fs.readFileSync(configPath));
+	const config = JSON.parse(await fs.readFile(configPath));
 
 	if (!config.webroot) {
 		throw new Error("webroot missing from .preload-config");
@@ -345,8 +334,8 @@ function loadConfig() {
 	return config;
 }
 
-function main(command) {
-	const config = loadConfig();
+async function main(command) {
+	const config = await loadConfig();
 	if (command === "build") {
 		init(config);
 		build(config);
@@ -357,4 +346,8 @@ function main(command) {
 	}
 }
 
-main(...process.argv.slice(2));
+try {
+	main(...process.argv.slice(2));
+} catch (error) {
+	console.error(error.trace);
+}

@@ -147,7 +147,7 @@ function buildPackage(name, entry) {
 	let absFile;
 	if (name in nodeLibs) {
 		if (!nodeLibs[name]) {
-			throw new Error(`${name} does not have a browser implementation`);
+			throw new Error(`'${name}' does not have a browser implementation`);
 		}
 		absFile = nodeLibs[name];
 	} else {
@@ -265,13 +265,27 @@ async function writeDeps(packageDir, vfs) {
 }
 
 async function writePackages(packageDir) {
+	const files = new Set(await fs.readdir(packageDir));
+	files.delete(".deps.json");
+	files.delete("preload.js");
+	const jobs = [];
+
 	for (const key of Object.keys(packages)) {
-		const filename = `${packageDir}/${key}.json`;
-		try {
-			await fs.writeFile(filename, JSON.stringify(packages[key]));
-		} catch (error) {
-			console.error(error);
-		}
+		const filename = `${key}.json`;
+		const filepath = `${packageDir}/${filename}`;
+		jobs.push(fs.writeFile(filepath, JSON.stringify(packages[key])));
+		files.delete(filename);
+	}
+
+	for (const filename of files) {
+		const filepath = `${packageDir}/${filename}`;
+		jobs.push(fs.unlink(filepath));
+	}
+
+	try {
+		await Promise.all(jobs);
+	} catch (error) {
+		console.error(error);
 	}
 }
 

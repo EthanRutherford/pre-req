@@ -7,6 +7,7 @@ module.exports = {
 	mkdir: util.promisify(fs.mkdir),
 	readdir: util.promisify(fs.readdir),
 	readFile: util.promisify(fs.readFile),
+	stat: util.promisify(fs.stat),
 	unlink: util.promisify(fs.unlink),
 	writeFile: util.promisify(fs.writeFile),
 };

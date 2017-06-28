@@ -109,6 +109,7 @@ async function parsePackage(pack, absRoot, absFile, relFile) {
 		return;
 	}
 	const pathObj = addPath(pack.files, relFile);
+	pack.dirty = true;
 
 	//don't parse deps or minify json files
 	if (relFile.endsWith(".json")) {
@@ -273,8 +274,11 @@ async function writePackages(packageDir) {
 	for (const key of Object.keys(packages)) {
 		const filename = `${key}.json`;
 		const filepath = `${packageDir}/${filename}`;
-		jobs.push(fs.writeFile(filepath, JSON.stringify(packages[key])));
 		files.delete(filename);
+		if (packages[key].dirty) {
+			delete packages[key].dirty;
+			jobs.push(fs.writeFile(filepath, JSON.stringify(packages[key])));
+		}
 	}
 
 	for (const filename of files) {
@@ -348,11 +352,43 @@ async function loadConfig() {
 	return config;
 }
 
+async function loadBundle(packageName, bundlePath, packageJson) {
+	const bundleJob = fs.stat(bundlePath);
+	const packageJob = fs.stat(packageJson);
+	if ((await packageJob).mtimeMs < (await bundleJob).mtimeMs) {
+		packages[packageName] = JSON.parse(await fs.readFile(bundlePath));
+	}
+}
+
+async function reloadBundles({outputDir}) {
+	const packageDir = `${outputDir}/preload_modules`;
+	const files = new Set(await fs.readdir(packageDir));
+	files.delete(".deps.json");
+	files.delete("preload.js");
+
+	const jobs = [];
+	for (const filename of files) {
+		const packageName = filename.split(".")[0];
+		let packageJson;
+		if (packageName in nodeLibs) {
+			const packMain = nodeLibs[packageName];
+			packageJson = `${getPackageRoot(packMain)}/package.json`;
+		} else {
+			packageJson = require.resolve(`${packageName}/package.json`);
+		}
+		const bundlePath = `${packageDir}/${filename}`;
+		jobs.push(loadBundle(packageName, bundlePath, packageJson));
+	}
+
+	await Promise.all(jobs);
+}
+
 async function main(command) {
 	const config = await loadConfig();
 	if (command === "build") {
-		init(config);
-		build(config);
+		await init(config);
+		await reloadBundles(config);
+		await build(config);
 	} else if (command === "watch") {
 		console.error("NOT IMPLEMENTED");
 	} else {

@@ -313,7 +313,19 @@ async function build({webroot, entryPoints, outputDir}) {
 	}
 }
 
-//outputDir is directory where preload_modules will be stored
+async function clean({outputDir}) {
+	const packageDir = `${outputDir}/preload_modules`;
+	const files = new Set(await fs.readdir(packageDir));
+
+	const jobs = [];
+	for (const filename of files) {
+		const filepath = `${packageDir}/${filename}`;
+		jobs.push(fs.unlink(filepath));
+	}
+
+	await Promise.all(jobs);
+}
+
 async function init({outputDir}) {
 	const absDir = path.resolve(outputDir);
 	const packageDir = absDir + "/preload_modules";
@@ -352,7 +364,7 @@ async function loadConfig() {
 	return config;
 }
 
-async function loadBundle(packageName, bundlePath, packageJson) {
+async function reloadBundle(packageName, bundlePath, packageJson) {
 	const bundleJob = fs.stat(bundlePath);
 	const packageJob = fs.stat(packageJson);
 	if ((await packageJob).mtimeMs < (await bundleJob).mtimeMs) {
@@ -377,7 +389,7 @@ async function reloadBundles({outputDir}) {
 			packageJson = require.resolve(`${packageName}/package.json`);
 		}
 		const bundlePath = `${packageDir}/${filename}`;
-		jobs.push(loadBundle(packageName, bundlePath, packageJson));
+		jobs.push(reloadBundle(packageName, bundlePath, packageJson));
 	}
 
 	await Promise.all(jobs);
@@ -388,6 +400,12 @@ async function main(command) {
 	if (command === "build") {
 		await init(config);
 		await reloadBundles(config);
+		await build(config);
+	} else if (command === "clean") {
+		await clean(config);
+	} else if (command === "rebuild") {
+		await clean(config);
+		await init(config);
 		await build(config);
 	} else if (command === "watch") {
 		console.error("NOT IMPLEMENTED");

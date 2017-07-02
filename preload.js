@@ -6,11 +6,11 @@ const {minify} = require("uglify-es");
 const nodeLibs = require("node-libs-browser");
 const path = require("path");
 const fs = require("./async-fs");
+const {all, tryAll} = require("./async-util");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
-let cache = {};
-let packages = {};
+let cache = {files: {}, packages: {}};
 
 const sDeps = "/deps";
 const sCode = "/code";
@@ -23,6 +23,21 @@ const minifyOptions = {
 };
 
 class JSONSet extends Set {
+	map(mapper) {
+		const result = new JSONSet();
+		this.forEach((val) => result.add(mapper(val)));
+		return result;
+	}
+	filter(filterer) {
+		const result = new JSONSet();
+		this.forEach((val) => filterer(val) ? result.add(val) : 0);
+		return result;
+	}
+	addMany(iterable) {
+		for (const item of iterable) {
+			this.add(item);
+		}
+	}
 	toJSON() {
 		return [...this];
 	}
@@ -39,19 +54,6 @@ function addPath(data, pathName) {
 		data = data[part];
 	}
 	return data;
-}
-
-function hasPath(data, pathName) {
-	pathName = pathName.substr(1);
-	if (pathName === "") return true;
-	const parts = pathName.split("/");
-	for (const part of parts) {
-		if (!(part in data)) {
-			return false;
-		}
-		data = data[part];
-	}
-	return true;
 }
 
 function resolveFileRelative(root, file, next) {
@@ -79,18 +81,22 @@ function absoluteToRelative(root, file) {
 	return "/" + rel;
 }
 
+function parseDeps(code) {
+	const deps = new Set(detective(code));
+	let match;
+	while ((match = preloadRegex.exec(code))) {
+		const [, dep] = match;
+		deps.add(dep.trim());
+	}
+	return [...deps];
+}
+
 async function getDependencies(src) {
 	try {
-		const data = (await fs.readFile(src)).toString();
-		const deps = new Set(detective(data));
-		let match;
-		while ((match = preloadRegex.exec(data))) {
-			const [, dep] = match;
-			deps.add(dep.trim());
-		}
-		return {code: data, deps: [...deps]};
+		const code = (await fs.readFile(src)).toString();
+		return {code, deps: parseDeps(code)};
 	} catch (error) {
-		console.error("file read error", error);
+		console.error(`ERROR: ${error.message}`);
 		return {};
 	}
 }
@@ -104,47 +110,53 @@ async function getJSON(file) {
 	}
 }
 
-async function parsePackage(pack, absRoot, absFile, relFile) {
-	if (hasPath(pack.files, relFile)) {
-		return;
+async function parsePackage(packName, absRoot, prevFile, curFile) {
+	const absFile = resolveFileRelative(absRoot, prevFile, curFile);
+	const relFile = packName + absoluteToRelative(absRoot, absFile);
+	if (relFile in cache.files) {
+		return relFile;
 	}
-	const pathObj = addPath(pack.files, relFile);
-	pack.dirty = true;
+
+	cache.packages[packName].dirty = true;
+	const obj = cache.files[relFile] = {};
 
 	//don't parse deps or minify json files
 	if (relFile.endsWith(".json")) {
-		pathObj[sCode] = await getJSON(absFile);
-		return;
+		obj[sCode] = await getJSON(absFile);
+		return relFile;
 	}
 
 	const data = await getDependencies(absFile);
 	const code = data.code.replace(envRegex, env);
 	const minified = minify(code, minifyOptions);
-	pathObj[sCode] = minified.code;
+	obj[sCode] = minified.code;
+	obj[sDeps] = new JSONSet();
 
 	const jobs = [];
 	for (const dep of data.deps) {
 		if (!isPackage(dep)) {
 			//normal dependency
-			const absDep = resolveFileRelative(absRoot, absFile, dep);
-			const relDep = absoluteToRelative(absRoot, absDep);
-			jobs.push(parsePackage(pack, absRoot, absDep, relDep));
+			jobs.push(parsePackage(packName, absRoot, absFile, dep));
 		} else {
 			//node_module
-			try {
-				const packageName = dep.split("/")[0];
-				pack[sDeps].add(packageName);
-				jobs.push(buildPackage(packageName, dep));
-			} catch (error) {
-				console.error(`ERROR: ${error.message}`);
-			}
+			const packName = dep.split("/")[0];
+			jobs.push(buildPackage(packName, dep));
 		}
 	}
 
-	await Promise.all(jobs);
+	const results = await tryAll(jobs);
+	for (const result of results) {
+		if (result.error) {
+			console.error(`ERROR: ${result.error.message}`);
+		} else {
+			obj[sDeps].add(result.value);
+		}
+	}
+
+	return relFile;
 }
 
-function buildPackage(name, entry) {
+async function buildPackage(name, entry) {
 	let absFile;
 	if (name in nodeLibs) {
 		if (!nodeLibs[name]) {
@@ -156,26 +168,29 @@ function buildPackage(name, entry) {
 	}
 	const absRoot = getPackageRoot(absFile);
 	const relFile = absoluteToRelative(absRoot, absFile);
-	if (!(name in packages)) {
+	if (!(name in cache.packages)) {
 		const absMainEntry = require.resolve(absRoot);
 		const mainEntry = absoluteToRelative(absRoot, absMainEntry);
 
-		packages[name] = {
+		cache.packages[name] = {
 			entry: mainEntry,
-			files: {},
-			[sDeps]: new JSONSet(),
+			dirty: false,
 		};
 	}
 
-	return parsePackage(packages[name], absRoot, absFile, relFile);
+	await parsePackage(name, absRoot, null, relFile);
+
+	return name + relFile;
 }
 
-async function parseTree(absRoot, absFile, relFile) {
-	if (relFile in cache || !relFile.endsWith(".js")) {
-		return;
+async function parseTree(absRoot, prevFile, curFile) {
+	const absFile = resolveFileRelative(absRoot, prevFile, curFile);
+	const relFile = absoluteToRelative(absRoot, absFile);
+	if (relFile in cache.files || !relFile.endsWith(".js")) {
+		return relFile;
 	}
-	const obj = cache[relFile] = {};
 
+	const obj = cache.files[relFile] = {};
 	const data = await getDependencies(absFile);
 	obj[sDeps] = new JSONSet();
 
@@ -183,42 +198,38 @@ async function parseTree(absRoot, absFile, relFile) {
 	for (const dep of data.deps) {
 		if (!isPackage(dep)) {
 			//normal dependency
-			try {
-				const absDep = resolveFileRelative(absRoot, absFile, dep);
-				const relDep = absoluteToRelative(absRoot, absDep);
-				obj[sDeps].add(relDep);
-				jobs.push(parseTree(absRoot, absDep, relDep));
-			} catch (error) {
-				console.error(`ERROR: ${error.message}`);
-			}
+			jobs.push(parseTree(absRoot, absFile, dep));
 		} else {
 			//node_module
-			const packageName = dep.split("/")[0];
-			try {
-				jobs.push(buildPackage(packageName, dep));
-				obj[sDeps].add(packageName);
-			} catch (error) {
-				console.error(`ERROR: ${error.message}`);
-			}
+			const packName = dep.split("/")[0];
+			jobs.push(buildPackage(packName, dep));
 		}
 	}
 
-	await Promise.all(jobs);
+	const results = await tryAll(jobs);
+	for (const result of results) {
+		if (result.error) {
+			console.error(`ERROR: ${result.error.message}`);
+		} else {
+			obj[sDeps].add(result.value);
+		}
+	}
+
+	return relFile;
 }
 
 async function buildCore(absRoot, entry) {
-	const absFile = resolveFileRelative(absRoot, null, entry);
-	const relFile = absoluteToRelative(absRoot, absFile);
-
-	await parseTree(absRoot, absFile, relFile);
+	await parseTree(absRoot, null, entry);
 }
 
 function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	let outputDir = absoluteToRelative(absRoot, absDir);
 	outputDir += outputDir.endsWith("/") ? "" : "/";
 
-	const clonedCache = {};
-	const clonedPackages = {};
+	const staleFiles = new Set(Object.keys(cache.files));
+
+	const clonedCache = {files: {}, packages: {}};
+	const packages = {};
 	const vfs = {files: {}, packages: {}, outputDir};
 
 	for (const entry of entries) {
@@ -228,33 +239,61 @@ function rebuildCacheAndVFS(absRoot, absDir, entries) {
 		const stack = [relFile];
 		while (stack.length > 0) {
 			const curFile = stack.pop();
-			let deps;
-
-			if (curFile.startsWith("/")) {
-				if (curFile in clonedCache) {
-					continue;
-				}
-				clonedCache[curFile] = cache[curFile];
-				Object.assign(addPath(vfs.files, curFile), cache[curFile]);
-
-				deps = cache[curFile][sDeps];
-			} else {
-				if (curFile in clonedPackages) {
-					continue;
-				}
-				clonedPackages[curFile] = packages[curFile];
-				vfs.packages[curFile] = {[sDeps]: packages[curFile][sDeps]};
-
-				deps = packages[curFile][sDeps];
+			if (curFile in clonedCache.files) {
+				continue;
 			}
 
-			stack.push(...deps);
+			staleFiles.delete(curFile);
+
+			clonedCache.files[curFile] = cache.files[curFile];
+			const minDeps = cache.files[curFile][sDeps].map((name) => {
+				return name.startsWith("/") ? name : name.split("/")[0];
+			});
+
+			if (curFile.startsWith("/")) {
+				const pathObj = addPath(vfs.files, curFile);
+				pathObj[sDeps] = minDeps;
+			} else {
+				const parts = curFile.split("/");
+				const name = parts.shift();
+				const relFile = "/" + parts.join("/");
+				const filtered = minDeps.filter((name) => !name.startsWith("/"));
+				filtered.delete(name);
+
+				if (!(name in vfs.packages)) {
+					vfs.packages[name] = {[sDeps]: new JSONSet()};
+					clonedCache.packages[name] = cache.packages[name];
+					packages[name] = {
+						entry: cache.packages[name].entry,
+						files: {},
+						[sDeps]: vfs.packages[name][sDeps],
+						dirty: cache.packages[name].dirty,
+					};
+					clonedCache.packages[name].dirty = false;
+				}
+
+				const sharedDepsSet = vfs.packages[name][sDeps];
+				sharedDepsSet.addMany(filtered);
+
+				const pathObj = addPath(packages[name].files, relFile);
+				pathObj[sCode] = cache.files[curFile][sCode];
+			}
+
+			stack.push(...cache.files[curFile][sDeps]);
+		}
+	}
+
+	for (const file in staleFiles) {
+		if (file.startsWith("/")) {
+			//TODO: dirty deps
+		} else {
+			const packName = file.split("/")[0];
+			packages[packName].dirty = true;
 		}
 	}
 
 	cache = clonedCache;
-	packages = clonedPackages;
-	return vfs;
+	return {vfs, packages};
 }
 
 async function writeDeps(packageDir, vfs) {
@@ -265,7 +304,7 @@ async function writeDeps(packageDir, vfs) {
 	}
 }
 
-async function writePackages(packageDir) {
+async function writePackages(packageDir, packages) {
 	const files = new Set(await fs.readdir(packageDir));
 	files.delete(".deps.json");
 	files.delete("preload.js");
@@ -287,7 +326,7 @@ async function writePackages(packageDir) {
 	}
 
 	try {
-		await Promise.all(jobs);
+		await all(jobs);
 	} catch (error) {
 		console.error(error);
 	}
@@ -301,20 +340,21 @@ async function build({webroot, entryPoints, outputDir}) {
 	const absDir = path.resolve(outputDir);
 
 	try {
-		await Promise.all(entryPoints.map((entry) => buildCore(absRoot, entry)));
+		await all(entryPoints.map((entry) => buildCore(absRoot, entry)));
 		const packageDir = absDir + "/preload_modules";
 
-		const vfs = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
+		const output = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
-		await writeDeps(packageDir, vfs);
-		await writePackages(packageDir);
+		await writeDeps(packageDir, output.vfs);
+		await writePackages(packageDir, output.packages);
 	} catch (error) {
 		console.error(error.stack);
 	}
 }
 
 async function clean({outputDir}) {
-	const packageDir = `${outputDir}/preload_modules`;
+	const absDir = path.resolve(outputDir);
+	const packageDir = absDir + "/preload_modules";
 	const files = new Set(await fs.readdir(packageDir));
 
 	const jobs = [];
@@ -323,7 +363,7 @@ async function clean({outputDir}) {
 		jobs.push(fs.unlink(filepath));
 	}
 
-	await Promise.all(jobs);
+	await all(jobs);
 }
 
 async function init({outputDir}) {
@@ -364,11 +404,56 @@ async function loadConfig() {
 	return config;
 }
 
-async function reloadBundle(packageName, bundlePath, packageJson) {
+function flattenVfs(out, fullname, obj) {
+	for (const key of Object.keys(obj)) {
+		if (key[0] === "/") {
+			out[fullname] = out[fullname] || {};
+			out[fullname][key] = obj[key];
+		} else {
+			flattenVfs(out, `${fullname}/${key}`, obj[key], key);
+		}
+	}
+}
+
+async function reloadBundle(packName, packRoot, bundlePath, packageJson) {
 	const bundleJob = fs.stat(bundlePath);
 	const packageJob = fs.stat(packageJson);
 	if ((await packageJob).mtimeMs < (await bundleJob).mtimeMs) {
-		packages[packageName] = JSON.parse(await fs.readFile(bundlePath));
+		const pack = JSON.parse(await fs.readFile(bundlePath));
+		const flattened = {};
+		flattenVfs(flattened, packName, pack.files);
+		//TODO: try to avoid having to rebuild the graph
+		for (const key of Object.keys(flattened)) {
+			const set = flattened[key][sDeps] = new JSONSet();
+			const relFile = "/" + key.split("/").slice(1).join("/");
+			const absFile = packRoot + relFile;
+			const deps = parseDeps(flattened[key][sCode]);
+			for (const dep of deps) {
+				if (!isPackage(dep)) {
+					//normal dependency
+					const absDep = resolveFileRelative(packRoot, absFile, dep);
+					const relDep = packName + absoluteToRelative(packRoot, absDep);
+					set.add(relDep);
+				} else {
+					//node_module
+					const name = dep.split("/")[0];
+					let absDep;
+					if (name in nodeLibs) {
+						absDep = nodeLibs[name];
+					} else {
+						absDep = require.resolve(dep);
+					}
+					const absRoot = getPackageRoot(absDep);
+					const relDep = absoluteToRelative(absRoot, absDep);
+					set.add(name + relDep);
+				}
+			}
+		}
+		Object.assign(cache.files, flattened);
+		cache.packages[packName] = {
+			entry: pack.entry,
+			dirty: false,
+		};
 	}
 }
 
@@ -380,19 +465,21 @@ async function reloadBundles({outputDir}) {
 
 	const jobs = [];
 	for (const filename of files) {
-		const packageName = filename.split(".")[0];
-		let packageJson;
-		if (packageName in nodeLibs) {
-			const packMain = nodeLibs[packageName];
-			packageJson = `${getPackageRoot(packMain)}/package.json`;
+		const packName = filename.split(".")[0];
+		let packJson;
+		let packRoot;
+		if (packName in nodeLibs) {
+			packRoot = getPackageRoot(nodeLibs[packName]);
+			packJson = `${packRoot}/package.json`;
 		} else {
-			packageJson = require.resolve(`${packageName}/package.json`);
+			packJson = require.resolve(`${packName}/package.json`);
+			packRoot = getPackageRoot(packJson);
 		}
 		const bundlePath = `${packageDir}/${filename}`;
-		jobs.push(reloadBundle(packageName, bundlePath, packageJson));
+		jobs.push(reloadBundle(packName, packRoot, bundlePath, packJson));
 	}
 
-	await Promise.all(jobs);
+	await all(jobs);
 }
 
 async function main(command) {
@@ -419,3 +506,8 @@ try {
 } catch (error) {
 	console.error(error.trace);
 }
+
+//TODO: support smart rebuilding of deps as well as packages
+//TODO: cache internal representation, don't use previous output
+//TODO: handle case where outdated bundle doesn't get rebuilt if
+//		all of its dependents are already up to date (and not rebuilt)

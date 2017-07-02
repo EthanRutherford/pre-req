@@ -1,11 +1,19 @@
 const all = Promise.all.bind(Promise);
 
-function unfail(promise) {
-	return promise.then((value) => ({value}), (error) => ({error}));
+async function each(jobs, resolve, reject) {
+	if (resolve == null) {
+		resolve = () => {};
+	}
+	if (reject == null) {
+		reject = (error) => {throw error;};
+	}
+	return all(jobs.map(async (job) => {
+		try {
+			resolve(await job);
+		} catch (error) {
+			reject(error);
+		}
+	}));
 }
 
-function tryAll(promises) {
-	return all(promises.map(unfail));
-}
-
-module.exports = {all, tryAll};
+module.exports = {all, each};

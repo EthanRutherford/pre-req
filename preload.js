@@ -6,7 +6,7 @@ const {minify} = require("uglify-es");
 const nodeLibs = require("node-libs-browser");
 const path = require("path");
 const fs = require("./async-fs");
-const {all, tryAll} = require("./async-util");
+const {all, each} = require("./async-util");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
@@ -105,7 +105,7 @@ async function getJSON(file) {
 	try {
 		return JSON.stringify(JSON.parse(await fs.readFile(file)));
 	} catch (error) {
-		console.error("file read error", error);
+		console.error(`ERROR: ${error.message}`);
 		return "";
 	}
 }
@@ -146,14 +146,11 @@ async function parsePackage(packName, absRoot, prevFile, curFile) {
 		}
 	}
 
-	const results = await tryAll(jobs);
-	for (const result of results) {
-		if (result.error) {
-			console.error(`ERROR: ${result.error.message}`);
-		} else {
-			obj[sDeps].add(result.value);
-		}
-	}
+	await each(jobs, (result) => {
+		obj[sDeps].add(result);
+	}, (error) => {
+		console.error(`ERROR: ${error.message}`);
+	});
 
 	return relFile;
 }
@@ -227,14 +224,11 @@ async function parseTree(absRoot, prevFile, curFile) {
 		}
 	}
 
-	const results = await tryAll(jobs);
-	for (const result of results) {
-		if (result.error) {
-			console.error(`ERROR: ${result.error.message}`);
-		} else {
-			obj[sDeps].add(result.value);
-		}
-	}
+	await each(jobs, (result) => {
+		obj[sDeps].add(result);
+	}, (error) => {
+		console.error(`ERROR: ${error.message}`);
+	});
 
 	return relFile;
 }
@@ -321,7 +315,7 @@ async function writeDeps(packageDir, vfs) {
 	try {
 		await fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs));
 	} catch (error) {
-		console.error(error);
+		console.error(`ERROR: ${error.message}`);
 	}
 }
 
@@ -346,11 +340,9 @@ async function writePackages(packageDir, packages) {
 		jobs.push(fs.unlink(filepath));
 	}
 
-	try {
-		await all(jobs);
-	} catch (error) {
-		console.error(error);
-	}
+	await each(jobs, null, (error) => {
+		console.error(`ERROR: ${error.message}`);
+	});
 }
 
 //webroot is the relative path to the webroot folder
@@ -366,8 +358,12 @@ async function build({webroot, entryPoints, outputDir}) {
 
 		const output = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
-		await writeDeps(packageDir, output.vfs);
-		await writePackages(packageDir, output.packages);
+		const jobs = [
+			writeDeps(packageDir, output.vfs),
+			writePackages(packageDir, output.packages),
+		];
+
+		await each(jobs);
 	} catch (error) {
 		console.error(error.stack);
 	}
@@ -384,7 +380,9 @@ async function clean({outputDir}) {
 		jobs.push(fs.unlink(filepath));
 	}
 
-	await all(jobs);
+	await each(jobs, null, (error) => {
+		console.error(`ERROR: ${error.message}`);
+	});
 }
 
 async function init({outputDir}) {
@@ -393,7 +391,11 @@ async function init({outputDir}) {
 	try {
 		await fs.mkdir(packageDir);
 	} catch (error) {
-		//directory already exists; no problem here
+		if (error.code === "EEXIST") {
+			//directory already exists; no problem here
+		} else {
+			throw error;
+		}
 	}
 	const preloadWeb = require.resolve("./web/preload");
 	const preloadScript = packageDir + "/preload.js";
@@ -504,29 +506,29 @@ async function reloadBundles({outputDir}) {
 }
 
 async function main(command) {
-	const config = await loadConfig();
-	if (command === "build") {
-		await init(config);
-		await reloadBundles(config);
-		await build(config);
-	} else if (command === "clean") {
-		await clean(config);
-	} else if (command === "rebuild") {
-		await clean(config);
-		await init(config);
-		await build(config);
-	} else if (command === "watch") {
-		console.error("NOT IMPLEMENTED");
-	} else {
-		console.error("command not recognized");
+	try {
+		const config = await loadConfig();
+		if (command === "build") {
+			await init(config);
+			//await reloadBundles(config);
+			await build(config);
+		} else if (command === "clean") {
+			await clean(config);
+		} else if (command === "rebuild") {
+			await clean(config);
+			await init(config);
+			await build(config);
+		} else if (command === "watch") {
+			console.error("NOT IMPLEMENTED");
+		} else {
+			console.error("command not recognized");
+		}
+	} catch (error) {
+		console.error(error.stack);
 	}
 }
 
-try {
-	main(...process.argv.slice(2));
-} catch (error) {
-	console.error(error.trace);
-}
+main(...process.argv.slice(2));
 
 //TODO: support smart rebuilding of deps as well as packages
 //TODO: cache internal representation, don't use previous output

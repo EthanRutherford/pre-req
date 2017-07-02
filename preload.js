@@ -111,13 +111,15 @@ async function getJSON(file) {
 }
 
 async function parsePackage(packName, absRoot, prevFile, curFile) {
-	const absFile = resolveFileRelative(absRoot, prevFile, curFile);
-	const relFile = packName + absoluteToRelative(absRoot, absFile);
+	const pack = cache.packages[packName];
+	const absFileTmp = resolveFileRelative(absRoot, prevFile, curFile);
+	const relFile = packName + absoluteToRelative(absRoot, absFileTmp);
+	const absFile = pack.browserMap[absFileTmp] || absFileTmp;
 	if (relFile in cache.files) {
 		return relFile;
 	}
 
-	cache.packages[packName].dirty = true;
+	pack.dirty = true;
 	const obj = cache.files[relFile] = {};
 
 	//don't parse deps or minify json files
@@ -156,6 +158,22 @@ async function parsePackage(packName, absRoot, prevFile, curFile) {
 	return relFile;
 }
 
+function calcMap(browser, absRoot, metaPath, entry) {
+	if (browser == null) return {};
+	if (typeof browser === "string") {
+		browser = {[entry]: browser};
+	}
+
+	const map = {};
+	for (const name of Object.keys(browser)) {
+		const absKey = resolveFileRelative(absRoot, metaPath, name);
+		const absVal = resolveFileRelative(absRoot, metaPath, browser[name]);
+		map[absKey] = absVal;
+	}
+
+	return map;
+}
+
 async function buildPackage(name, entry) {
 	let absFile;
 	if (name in nodeLibs) {
@@ -169,11 +187,14 @@ async function buildPackage(name, entry) {
 	const absRoot = getPackageRoot(absFile);
 	const relFile = absoluteToRelative(absRoot, absFile);
 	if (!(name in cache.packages)) {
+		const metaPath = require.resolve(absRoot + "/package.json");
+		const meta = JSON.parse(await fs.readFile(metaPath));
 		const absMainEntry = require.resolve(absRoot);
 		const mainEntry = absoluteToRelative(absRoot, absMainEntry);
 
 		cache.packages[name] = {
 			entry: mainEntry,
+			browserMap: calcMap(meta.browser, absRoot, metaPath, mainEntry),
 			dirty: false,
 		};
 	}

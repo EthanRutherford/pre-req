@@ -11,7 +11,7 @@
   "dependencies": {
     "detective": "^4.5.0",
     "node-libs-browser": "^2.0.0",
-    "uglify-es": "^3.0.20"
+    "uglify-es": "^3.0.22"
   },
   "devDependencies": {},
   "bin": {

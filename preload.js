@@ -63,7 +63,7 @@ function resolveFileRelative(root, file, next) {
 		const dir = path.dirname(file);
 		next = path.resolve(dir, next);
 	}
-	return require.resolve(next);
+	return require.resolve(next).replace(/\\/g, "/");
 }
 
 function getPackageRoot(absFile) {
@@ -110,52 +110,6 @@ async function getJSON(file) {
 	}
 }
 
-async function parsePackage(packName, absRoot, prevFile, curFile) {
-	const pack = cache.packages[packName];
-	const absFileTmp = resolveFileRelative(absRoot, prevFile, curFile);
-	const relFile = packName + absoluteToRelative(absRoot, absFileTmp);
-	const absFile = pack.browserMap[absFileTmp] || absFileTmp;
-	if (relFile in cache.files) {
-		return relFile;
-	}
-
-	pack.dirty = true;
-	pack.files.push(relFile);
-	const obj = cache.files[relFile] = {};
-
-	//don't parse deps or minify json files
-	if (relFile.endsWith(".json")) {
-		obj[sCode] = await getJSON(absFile);
-		return relFile;
-	}
-
-	const data = await getDependencies(absFile);
-	const code = data.code.replace(envRegex, env);
-	const minified = minify(code, minifyOptions);
-	obj[sCode] = minified.code;
-	obj[sDeps] = new JSONSet();
-
-	const jobs = [];
-	for (const dep of data.deps) {
-		if (!isPackage(dep)) {
-			//normal dependency
-			jobs.push(parsePackage(packName, absRoot, absFile, dep));
-		} else {
-			//node_module
-			const packName = dep.split("/")[0];
-			jobs.push(buildPackage(packName, dep));
-		}
-	}
-
-	await each(jobs, (result) => {
-		obj[sDeps].add(result);
-	}, (error) => {
-		console.error(`ERROR: ${error.message}`);
-	});
-
-	return relFile;
-}
-
 function calcMap(browser, absRoot, metaPath, entry) {
 	if (browser == null) return {};
 	if (typeof browser === "string") {
@@ -172,18 +126,7 @@ function calcMap(browser, absRoot, metaPath, entry) {
 	return map;
 }
 
-async function buildPackage(name, entry) {
-	let absFile;
-	if (name in nodeLibs) {
-		if (!nodeLibs[name]) {
-			throw new Error(`'${name}' does not have a browser implementation`);
-		}
-		absFile = nodeLibs[name];
-	} else {
-		absFile = require.resolve(entry);
-	}
-	const absRoot = getPackageRoot(absFile);
-	const relFile = absoluteToRelative(absRoot, absFile);
+async function enterPackage(name, absRoot, relFile) {
 	if (!(name in cache.packages)) {
 		const metaPath = require.resolve(absRoot + "/package.json");
 		const meta = JSON.parse(await fs.readFile(metaPath));
@@ -198,42 +141,93 @@ async function buildPackage(name, entry) {
 		};
 	}
 
-	await parsePackage(name, absRoot, null, relFile);
+	await parsePackFile(name, absRoot, relFile);
 
 	return name + relFile;
 }
 
-async function parseTree(absRoot, prevFile, curFile) {
-	const absFile = resolveFileRelative(absRoot, prevFile, curFile);
-	const relFile = absoluteToRelative(absRoot, absFile);
-	if (relFile in cache.files || !relFile.endsWith(".js")) {
-		return relFile;
+async function parsePackFile(packName, packRoot, relFile) {
+	const pack = cache.packages[packName];
+	const absFileTmp = `${packRoot}/${relFile.split("/").slice(1).join("/")}`;
+	const absFile = pack.browserMap[absFileTmp] || absFileTmp;
+
+	pack.dirty = true;
+	pack.files.push(relFile);
+	const obj = cache.files[relFile] = {};
+
+	//json files don't have deps or get minified
+	if (relFile.endsWith(".json")) {
+		obj[sCode] = await getJSON(absFile);
+		return;
 	}
+
+	const data = await getDependencies(absFile);
+	const code = data.code.replace(envRegex, env);
+	const minified = minify(code, minifyOptions);
+	obj[sCode] = minified.code;
+	obj[sDeps] = new JSONSet(data.deps);
+}
+
+async function parseFile(absRoot, relFile) {
+	const absFile = absRoot + relFile;
 
 	cache.dirty = true;
 	const obj = cache.files[relFile] = {};
 	const data = await getDependencies(absFile);
-	obj[sDeps] = new JSONSet();
+	obj[sDeps] = new JSONSet(data.deps);
+}
 
-	const jobs = [];
-	for (const dep of data.deps) {
-		if (!isPackage(dep)) {
-			//normal dependency
-			jobs.push(parseTree(absRoot, absFile, dep));
+function resolveFile(absRoot, prevFile, curFile) {
+	if (isPackage(curFile)) {
+		const name = curFile.split("/")[0];
+		let absFile;
+		if (name in nodeLibs) {
+			if (!nodeLibs[name]) {
+				throw new Error(`'${name}' does not have a browser implementation`);
+			}
+			absFile = nodeLibs[name];
 		} else {
-			//node_module
-			const packName = dep.split("/")[0];
-			jobs.push(buildPackage(packName, dep));
+			absFile = require.resolve(curFile);
+		}
+		const packRoot = getPackageRoot(absFile);
+		const relFile = `${name}${absoluteToRelative(packRoot, absFile)}`;
+		return {isPackage: true, relFile, packRoot};
+	}
+	const absFile = resolveFileRelative(absRoot, prevFile, curFile);
+	const relFile = absoluteToRelative(absRoot, absFile);
+	return {isPackage: false, relFile, packRoot: null};
+}
+
+function resolveFiles(absRoot, prevFile, files) {
+	prevFile = absRoot + prevFile;
+	const results = [];
+	for (const file of files) {
+		try {
+			results.push(resolveFile(absRoot, prevFile, file));
+		} catch (error) {
+			console.error(`ERROR: ${error.message}`);
 		}
 	}
+	return results;
+}
 
-	await each(jobs, (result) => {
-		obj[sDeps].add(result);
-	}, (error) => {
-		console.error(`ERROR: ${error.message}`);
-	});
-
-	return relFile;
+function resolvePackFiles(absRoot, packName, prevFile, files) {
+	prevFile = `${absRoot}/${prevFile.split("/").slice(1).join("/")}`;
+	const results = [];
+	for (const file of files) {
+		try {
+			const result = resolveFile(absRoot, prevFile, file);
+			if (!result.isPackage) {
+				result.isPackage = true;
+				result.relFile = packName + result.relFile;
+				result.packRoot = absRoot;
+			}
+			results.push(result);
+		} catch (error) {
+			console.error(`ERROR: ${error.message}`);
+		}
+	}
+	return results;
 }
 
 async function rebuildCacheAndVFS(absRoot, absDir, entries) {
@@ -246,70 +240,72 @@ async function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	const packages = {};
 	const vfs = {files: {}, packages: {}, outputDir};
 
-	for (const entry of entries) {
-		const absFile = resolveFileRelative(absRoot, null, entry);
-		const relFile = absoluteToRelative(absRoot, absFile);
-
-		const stack = [relFile];
-		while (stack.length > 0) {
-			const curFile = stack.pop();
-			const isPackage = curFile[0] !== "/";
-			if (curFile in clonedCache.files) {
-				continue;
-			}
-
-			if (!(curFile in cache.files)) {
-				if (!isPackage) {
-					await parseTree(absRoot, null, curFile);
-				} else {
-					const packName = curFile.split("/")[0];
-					await buildPackage(packName, curFile);
-				}
-			}
-
-			staleFiles.delete(curFile);
-
-			clonedCache.files[curFile] = cache.files[curFile];
-			const minDeps = cache.files[curFile][sDeps].map((name) => {
-				return name[0] === "/" ? name : name.split("/")[0];
-			});
-
-			if (!isPackage) {
-				const pathObj = addPath(vfs.files, curFile);
-				pathObj[sDeps] = minDeps;
-			} else {
-				const parts = curFile.split("/");
-				const name = parts.shift();
-				const relFile = "/" + parts.join("/");
-				minDeps.delete(name);
-
-				if (!(name in vfs.packages)) {
-					vfs.packages[name] = {[sDeps]: new JSONSet()};
-					clonedCache.packages[name] = {
-						entry: cache.packages[name].entry,
-						files: [],
-						browserMap: cache.packages[name].browserMap,
-						dirty: false,
-					};
-					packages[name] = {
-						entry: cache.packages[name].entry,
-						files: {},
-						[sDeps]: vfs.packages[name][sDeps],
-						dirty: cache.packages[name].dirty,
-					};
-				}
-
-				clonedCache.packages[name].files.push(curFile);
-
-				const sharedDepsSet = vfs.packages[name][sDeps];
-				sharedDepsSet.addMany(minDeps);
-
-				const pathObj = addPath(packages[name].files, relFile);
-				pathObj[sCode] = cache.files[curFile][sCode];
-			}
-
-			stack.push(...cache.files[curFile][sDeps]);
+	const stack = resolveFiles(absRoot, null, entries);
+	while (stack.length > 0) {
+		const {isPackage, relFile, packRoot} = stack.pop();
+		if (relFile in clonedCache.files) {
+			continue;
 		}
+
+		if (!(relFile in cache.files)) {
+			if (!isPackage) {
+				await parseFile(absRoot, relFile);
+			} else {
+				const packName = relFile.split("/")[0];
+				await enterPackage(packName, packRoot, relFile);
+			}
+		}
+
+		staleFiles.delete(relFile);
+		clonedCache.files[relFile] = cache.files[relFile];
+
+		let deps;
+
+		if (!isPackage) {
+			const pathObj = addPath(vfs.files, relFile);
+			deps = resolveFiles(absRoot, relFile, cache.files[relFile][sDeps]);
+			const minDeps = new JSONSet(deps.map((dep) => {
+				const name = dep.relFile;
+				return name[0] === "/" ? name : name.split("/")[0];
+			}));
+			pathObj[sDeps] = minDeps;
+		} else {
+			const parts = relFile.split("/");
+			const name = parts.shift();
+			const curFile = "/" + parts.join("/");
+			deps = resolvePackFiles(packRoot, name, relFile, cache.files[relFile][sDeps]);
+			const minDeps = new JSONSet(deps.map((dep) => {
+				const name = dep.relFile;
+				return name[0] === "/" ? name : name.split("/")[0];
+			}));
+			minDeps.delete(name);
+
+			if (!(name in vfs.packages)) {
+				vfs.packages[name] = {[sDeps]: new JSONSet()};
+				clonedCache.packages[name] = {
+					entry: cache.packages[name].entry,
+					files: [],
+					browserMap: cache.packages[name].browserMap,
+					dirty: false,
+				};
+				packages[name] = {
+					entry: cache.packages[name].entry,
+					files: {},
+					[sDeps]: vfs.packages[name][sDeps],
+					dirty: cache.packages[name].dirty,
+				};
+			}
+
+			clonedCache.packages[name].files.push(relFile);
+
+			const sharedDepsSet = vfs.packages[name][sDeps];
+			sharedDepsSet.addMany(minDeps);
+
+			const pathObj = addPath(packages[name].files, curFile);
+			pathObj[sCode] = cache.files[relFile][sCode];
+		}
+
+		stack.push(...deps);
 	}
 
 	vfs.dirty = cache.dirty;
@@ -455,6 +451,7 @@ async function saveCache() {
 
 function removeFile(file) {
 	delete cache.files[file];
+	cache.dirty = true;
 }
 
 function removePackage(packName) {
@@ -545,5 +542,3 @@ async function main(command) {
 }
 
 main(...process.argv.slice(2));
-
-//TODO: re-evaluate/refactor the parse(Tree/Package) flow

@@ -446,7 +446,7 @@ async function loadConfig() {
 
 async function saveCache() {
 	const string = JSON.stringify(cache);
-	await fs.writeFile(require.resolve("./.cache"), string);
+	await fs.writeFile(__dirname + "/.cache", string);
 }
 
 function removeFile(file) {
@@ -472,7 +472,7 @@ function getPackageMeta(packName) {
 async function restoreCache({webroot}) {
 	const absRoot = path.resolve(webroot);
 
-	const cachepath = require.resolve("./.cache");
+	const cachepath = __dirname + "/.cache";
 	try {
 		const jobs = [fs.stat(cachepath), fs.readFile(cachepath)];
 		const [stats, string] = await all(jobs);

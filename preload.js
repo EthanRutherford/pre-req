@@ -517,8 +517,8 @@ async function restoreCache({webroot}) {
 
 async function main(command) {
 	try {
-		const start = Date.now();
 		console.log(`running ${command}...`);
+		const start = Date.now();
 		const config = await loadConfig();
 		if (command === "build") {
 			await init(config);
@@ -535,7 +535,8 @@ async function main(command) {
 		} else {
 			console.error("command not recognized");
 		}
-		console.log(`${command} finished in ${Date.now() - start}ms`);
+		const elapsed = Date.now() - start;
+		console.log(`${command} finished in ${elapsed}ms`);
 	} catch (error) {
 		console.error(error.stack);
 	}

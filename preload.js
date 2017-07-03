@@ -484,32 +484,29 @@ async function restoreCache({webroot}) {
 		cache = JSON.parse(string, reviver);
 		const lastRun = stats.mtimeMs;
 
-		const seenPacks = new Set();
-		const files = Object.keys(cache.files);
-		for (const file of files) {
-			if (file[0] === "/") {
-				try {
-					const mtime = (await fs.stat(absRoot + file)).mtimeMs;
-					if (mtime > lastRun) {
-						removeFile(file);
-					}
-				} catch (error) {
-					removeFile(file);
-				}
-			} else {
-				const packName = file.split("/")[0];
-				if (seenPacks.has(packName)) continue;
-				seenPacks.add(packName);
-
-				try {
-					const metaFile = getPackageMeta(packName);
-					const mtime = (await fs.stat(metaFile)).mtimeMs;
-					if (mtime > lastRun) {
-						removePackage(packName);
-					}
-				} catch (error) {
+		const packages = Object.keys(cache.packages);
+		for (const packName of packages) {
+			try {
+				const metaFile = getPackageMeta(packName);
+				const mtime = (await fs.stat(metaFile)).mtimeMs;
+				if (mtime > lastRun) {
 					removePackage(packName);
 				}
+			} catch (error) {
+				removePackage(packName);
+			}
+		}
+
+		const files = Object.keys(cache.files);
+		for (const file of files) {
+			if (file[0] !== "/") continue;
+			try {
+				const mtime = (await fs.stat(absRoot + file)).mtimeMs;
+				if (mtime > lastRun) {
+					removeFile(file);
+				}
+			} catch (error) {
+				removeFile(file);
 			}
 		}
 	} catch (error) {

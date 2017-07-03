@@ -10,7 +10,7 @@ const {all, each} = require("./async-util");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
-let cache = {files: {}, packages: {}};
+let cache = {files: {}, packages: {}, dirty: false};
 
 const sDeps = "/deps";
 const sCode = "/code";
@@ -120,6 +120,7 @@ async function parsePackage(packName, absRoot, prevFile, curFile) {
 	}
 
 	pack.dirty = true;
+	pack.files.push(relFile);
 	const obj = cache.files[relFile] = {};
 
 	//don't parse deps or minify json files
@@ -191,6 +192,7 @@ async function buildPackage(name, entry) {
 
 		cache.packages[name] = {
 			entry: mainEntry,
+			files: [],
 			browserMap: calcMap(meta.browser, absRoot, metaPath, mainEntry),
 			dirty: false,
 		};
@@ -208,6 +210,7 @@ async function parseTree(absRoot, prevFile, curFile) {
 		return relFile;
 	}
 
+	cache.dirty = true;
 	const obj = cache.files[relFile] = {};
 	const data = await getDependencies(absFile);
 	obj[sDeps] = new JSONSet();
@@ -233,17 +236,13 @@ async function parseTree(absRoot, prevFile, curFile) {
 	return relFile;
 }
 
-async function buildCore(absRoot, entry) {
-	await parseTree(absRoot, null, entry);
-}
-
-function rebuildCacheAndVFS(absRoot, absDir, entries) {
+async function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	let outputDir = absoluteToRelative(absRoot, absDir);
 	outputDir += outputDir.endsWith("/") ? "" : "/";
 
 	const staleFiles = new Set(Object.keys(cache.files));
 
-	const clonedCache = {files: {}, packages: {}};
+	const clonedCache = {files: {}, packages: {}, dirty: false};
 	const packages = {};
 	const vfs = {files: {}, packages: {}, outputDir};
 
@@ -254,41 +253,56 @@ function rebuildCacheAndVFS(absRoot, absDir, entries) {
 		const stack = [relFile];
 		while (stack.length > 0) {
 			const curFile = stack.pop();
+			const isPackage = curFile[0] !== "/";
 			if (curFile in clonedCache.files) {
 				continue;
+			}
+
+			if (!(curFile in cache.files)) {
+				if (!isPackage) {
+					await parseTree(absRoot, null, curFile);
+				} else {
+					const packName = curFile.split("/")[0];
+					await buildPackage(packName, curFile);
+				}
 			}
 
 			staleFiles.delete(curFile);
 
 			clonedCache.files[curFile] = cache.files[curFile];
 			const minDeps = cache.files[curFile][sDeps].map((name) => {
-				return name.startsWith("/") ? name : name.split("/")[0];
+				return name[0] === "/" ? name : name.split("/")[0];
 			});
 
-			if (curFile.startsWith("/")) {
+			if (!isPackage) {
 				const pathObj = addPath(vfs.files, curFile);
 				pathObj[sDeps] = minDeps;
 			} else {
 				const parts = curFile.split("/");
 				const name = parts.shift();
 				const relFile = "/" + parts.join("/");
-				const filtered = minDeps.filter((name) => !name.startsWith("/"));
-				filtered.delete(name);
+				minDeps.delete(name);
 
 				if (!(name in vfs.packages)) {
 					vfs.packages[name] = {[sDeps]: new JSONSet()};
-					clonedCache.packages[name] = cache.packages[name];
+					clonedCache.packages[name] = {
+						entry: cache.packages[name].entry,
+						files: [],
+						browserMap: cache.packages[name].browserMap,
+						dirty: false,
+					};
 					packages[name] = {
 						entry: cache.packages[name].entry,
 						files: {},
 						[sDeps]: vfs.packages[name][sDeps],
 						dirty: cache.packages[name].dirty,
 					};
-					clonedCache.packages[name].dirty = false;
 				}
 
+				clonedCache.packages[name].files.push(curFile);
+
 				const sharedDepsSet = vfs.packages[name][sDeps];
-				sharedDepsSet.addMany(filtered);
+				sharedDepsSet.addMany(minDeps);
 
 				const pathObj = addPath(packages[name].files, relFile);
 				pathObj[sCode] = cache.files[curFile][sCode];
@@ -298,9 +312,11 @@ function rebuildCacheAndVFS(absRoot, absDir, entries) {
 		}
 	}
 
+	vfs.dirty = cache.dirty;
+
 	for (const file in staleFiles) {
-		if (file.startsWith("/")) {
-			//TODO: dirty deps
+		if (file[0] === "/") {
+			vfs.dirty = true;
 		} else {
 			const packName = file.split("/")[0];
 			packages[packName].dirty = true;
@@ -312,6 +328,11 @@ function rebuildCacheAndVFS(absRoot, absDir, entries) {
 }
 
 async function writeDeps(packageDir, vfs) {
+	if (!vfs.dirty) {
+		return;
+	}
+	delete vfs.dirty;
+
 	try {
 		await fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs));
 	} catch (error) {
@@ -353,14 +374,13 @@ async function build({webroot, entryPoints, outputDir}) {
 	const absDir = path.resolve(outputDir);
 
 	try {
-		await all(entryPoints.map((entry) => buildCore(absRoot, entry)));
 		const packageDir = absDir + "/preload_modules";
-
-		const output = rebuildCacheAndVFS(absRoot, absDir, entryPoints);
+		const output = await rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
 		const jobs = [
 			writeDeps(packageDir, output.vfs),
 			writePackages(packageDir, output.packages),
+			saveCache(),
 		];
 
 		await each(jobs);
@@ -375,6 +395,7 @@ async function clean({outputDir}) {
 	const files = new Set(await fs.readdir(packageDir));
 
 	const jobs = [];
+	jobs.push(fs.unlink(path.resolve("./.cache")));
 	for (const filename of files) {
 		const filepath = `${packageDir}/${filename}`;
 		jobs.push(fs.unlink(filepath));
@@ -427,90 +448,87 @@ async function loadConfig() {
 	return config;
 }
 
-function flattenVfs(out, fullname, obj) {
-	for (const key of Object.keys(obj)) {
-		if (key[0] === "/") {
-			out[fullname] = out[fullname] || {};
-			out[fullname][key] = obj[key];
-		} else {
-			flattenVfs(out, `${fullname}/${key}`, obj[key], key);
-		}
-	}
+async function saveCache() {
+	const string = JSON.stringify(cache);
+	await fs.writeFile(path.resolve("./.cache"), string);
 }
 
-async function reloadBundle(packName, packRoot, bundlePath, packageJson) {
-	const bundleJob = fs.stat(bundlePath);
-	const packageJob = fs.stat(packageJson);
-	if ((await packageJob).mtimeMs < (await bundleJob).mtimeMs) {
-		const pack = JSON.parse(await fs.readFile(bundlePath));
-		const flattened = {};
-		flattenVfs(flattened, packName, pack.files);
-		//TODO: try to avoid having to rebuild the graph
-		for (const key of Object.keys(flattened)) {
-			const set = flattened[key][sDeps] = new JSONSet();
-			const relFile = "/" + key.split("/").slice(1).join("/");
-			const absFile = packRoot + relFile;
-			const deps = parseDeps(flattened[key][sCode]);
-			for (const dep of deps) {
-				if (!isPackage(dep)) {
-					//normal dependency
-					const absDep = resolveFileRelative(packRoot, absFile, dep);
-					const relDep = packName + absoluteToRelative(packRoot, absDep);
-					set.add(relDep);
-				} else {
-					//node_module
-					const name = dep.split("/")[0];
-					let absDep;
-					if (name in nodeLibs) {
-						absDep = nodeLibs[name];
-					} else {
-						absDep = require.resolve(dep);
+function removeFile(file) {
+	delete cache.files[file];
+}
+
+function removePackage(packName) {
+	for (const file of cache.packages[packName].files) {
+		delete cache.files[file];
+	}
+	delete cache.packages[packName];
+}
+
+function getPackageMeta(packName) {
+	if (packName in nodeLibs) {
+		const packRoot = getPackageRoot(nodeLibs[packName]);
+		return `${packRoot}/package.json`;
+	}
+	return require.resolve(`${packName}/package.json`);
+}
+
+async function restoreCache({webroot}) {
+	const absRoot = path.resolve(webroot);
+
+	const cachepath = path.resolve("./.cache");
+	try {
+		const jobs = [fs.stat(cachepath), fs.readFile(cachepath)];
+		const [stats, string] = await all(jobs);
+
+		const reviver = (k, v) => k === sDeps ? new JSONSet(v) : v;
+		cache = JSON.parse(string, reviver);
+		const lastRun = stats.mtimeMs;
+
+		const seenPacks = new Set();
+		const files = Object.keys(cache.files);
+		for (const file of files) {
+			if (file[0] === "/") {
+				try {
+					const mtime = (await fs.stat(absRoot + file)).mtimeMs;
+					if (mtime > lastRun) {
+						removeFile(file);
 					}
-					const absRoot = getPackageRoot(absDep);
-					const relDep = absoluteToRelative(absRoot, absDep);
-					set.add(name + relDep);
+				} catch (error) {
+					removeFile(file);
+				}
+			} else {
+				const packName = file.split("/")[0];
+				if (seenPacks.has(packName)) continue;
+				seenPacks.add(packName);
+
+				try {
+					const metaFile = getPackageMeta(packName);
+					const mtime = (await fs.stat(metaFile)).mtimeMs;
+					if (mtime > lastRun) {
+						removePackage(packName);
+					}
+				} catch (error) {
+					removePackage(packName);
 				}
 			}
 		}
-		Object.assign(cache.files, flattened);
-		cache.packages[packName] = {
-			entry: pack.entry,
-			dirty: false,
-		};
-	}
-}
-
-async function reloadBundles({outputDir}) {
-	const packageDir = `${outputDir}/preload_modules`;
-	const files = new Set(await fs.readdir(packageDir));
-	files.delete(".deps.json");
-	files.delete("preload.js");
-
-	const jobs = [];
-	for (const filename of files) {
-		const packName = filename.split(".")[0];
-		let packJson;
-		let packRoot;
-		if (packName in nodeLibs) {
-			packRoot = getPackageRoot(nodeLibs[packName]);
-			packJson = `${packRoot}/package.json`;
+	} catch (error) {
+		if (error.code === "ENOENT") {
+			//do nothing, this build will simply be from scratch
 		} else {
-			packJson = require.resolve(`${packName}/package.json`);
-			packRoot = getPackageRoot(packJson);
+			throw error;
 		}
-		const bundlePath = `${packageDir}/${filename}`;
-		jobs.push(reloadBundle(packName, packRoot, bundlePath, packJson));
 	}
-
-	await all(jobs);
 }
 
 async function main(command) {
 	try {
+		const start = Date.now();
+		console.log(`running ${command}...`);
 		const config = await loadConfig();
 		if (command === "build") {
 			await init(config);
-			//await reloadBundles(config);
+			await restoreCache(config);
 			await build(config);
 		} else if (command === "clean") {
 			await clean(config);
@@ -523,6 +541,7 @@ async function main(command) {
 		} else {
 			console.error("command not recognized");
 		}
+		console.log(`${command} finished in ${Date.now() - start}ms`);
 	} catch (error) {
 		console.error(error.stack);
 	}
@@ -530,7 +549,4 @@ async function main(command) {
 
 main(...process.argv.slice(2));
 
-//TODO: support smart rebuilding of deps as well as packages
-//TODO: cache internal representation, don't use previous output
-//TODO: handle case where outdated bundle doesn't get rebuilt if
-//		all of its dependents are already up to date (and not rebuilt)
+//TODO: re-evaluate/refactor the parse(Tree/Package) flow

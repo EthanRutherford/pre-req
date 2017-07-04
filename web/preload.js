@@ -145,6 +145,7 @@
 			}
 			relativeTo = "/";
 			src = file || pack.entry;
+			pack.name = packname;
 		}
 
 		const data = resolveCore(pack, src, relativeTo);

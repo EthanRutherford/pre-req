@@ -1,6 +1,6 @@
 {
   "name": "pre-req",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Build dependency graphs and bundle npm modules to provide an implementation of require in the browser",
   "main": "preload.js",
   "scripts": {

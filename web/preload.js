@@ -8,6 +8,8 @@
 	const sCode = "/code";
 	const sModule = "/module";
 	const sPromise = "/promise";
+	//css loader
+	let cssLoader;
 	//add a path to the virtual filesystem
 	function addPath(data, pathName) {
 		pathName = pathName.substr(1);
@@ -159,6 +161,8 @@
 				execute(data.obj[sCode], data.url, data.obj, pack);
 			} else if (data.url.endsWith(".json")) {
 				data.obj[sModule] = JSON.parse(data.obj[sCode]);
+			} else if (data.url.endsWith(".css") && cssLoader instanceof Function) {
+				data.obj[sModule] = cssLoader(data.obj[sCode], data.url);
 			}
 		}
 		return data.obj[sModule];
@@ -192,7 +196,7 @@
 			return obj[sPromise];
 		}
 
-		return new Promise((resolve, reject) => {
+		return obj[sPromise] = new Promise((resolve, reject) => {
 			load(src).then((response) => {
 				if (!response.ok) {
 					reject(response.statusText);
@@ -231,21 +235,33 @@
 	}
 	function preloadCss(src, set) {
 		set.add(src);
-		if (document.querySelectorAll("link[href='" + src + "']").length) {
-			return true;
+		const obj = addPath(cache.files, src);
+		if (obj[sPromise]) {
+			return obj[sPromise];
 		}
-		return new Promise((resolve, reject) => {
+
+		return obj[sPromise] = new Promise((resolve, reject) => {
 			const link = document.createElement("link");
 			link.rel = "stylesheet";
 			link.type = "text/css";
 			link.href = src;
-			document.head.appendChild(link);
-			link.onload = () => {
-				resolve(true);
-			};
-			link.onerror = (event) => {
-				reject(event);
-			};
+
+			const links = document.querySelectorAll("link[rel='stylesheet']");
+			const match = [...links].find((x) => x.href === link.href);
+			if (match != null) {
+				obj[sCode] = match.sheet;
+				resolve();
+			} else {
+				document.head.appendChild(link);
+
+				link.onload = () => {
+					obj[sCode] = link.sheet;
+					resolve();
+				};
+				link.onerror = (event) => {
+					reject(event);
+				};
+			}
 		});
 	}
 	//the core preloader
@@ -302,9 +318,15 @@
 			return requireCore(src, this.location.pathname);
 		});
 	};
+	//moethod which provides support for defining a css loader
+	//the loader function should accept a cssStyleSheet object and url,
+	//and return an object which will be passed into dependent js code
+	const onCss = (loader) => {
+		cssLoader = loader;
+	};
 	//add a definition for global
 	this.global = this;
 	//export the module to this.preload
-	this.preload = {define, main, require};
+	this.preload = {define, main, require, onCss};
 })();
 

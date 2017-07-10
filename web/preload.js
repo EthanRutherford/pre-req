@@ -9,7 +9,7 @@
 	const sModule = "/module";
 	const sPromise = "/promise";
 	//css loader
-	let cssLoader;
+	let cssLoader = (sheet) => sheet;
 	//add a path to the virtual filesystem
 	function addPath(data, pathName) {
 		pathName = pathName.substr(1);
@@ -107,7 +107,11 @@
 	}
 	//looks for a .js or .json path
 	function resolvePath(pack, pathName) {
-		if (!pathName.endsWith(".js") && !pathName.endsWith(".json")) {
+		if (
+			!pathName.endsWith(".js") &&
+			!pathName.endsWith(".json") &&
+			!pathName.endsWith(".css")
+		) {
 			if (pathName.endsWith("/")) {
 				pathName = pathName.slice(0, -1);
 			}
@@ -151,7 +155,7 @@
 		}
 
 		const data = resolveCore(pack, src, relativeTo);
-		if (!data.obj) {
+		if (!data || !data.obj) {
 			throw new Error(`${data.url} was required without being preloaded.`);
 		}
 
@@ -161,10 +165,12 @@
 				execute(data.obj[sCode], data.url, data.obj, pack);
 			} else if (data.url.endsWith(".json")) {
 				data.obj[sModule] = JSON.parse(data.obj[sCode]);
-			} else if (data.url.endsWith(".css") && cssLoader instanceof Function) {
+			} else if (data.url.endsWith(".css")) {
 				data.obj[sModule] = cssLoader(data.obj[sCode], data.url);
+				data.obj[sCode].disabled = false;
 			}
 		}
+
 		return data.obj[sModule];
 	}
 	function preloadPackage(name, set) {
@@ -256,6 +262,7 @@
 
 				link.onload = () => {
 					obj[sCode] = link.sheet;
+					link.sheet.disabled = true;
 					resolve();
 				};
 				link.onerror = (event) => {

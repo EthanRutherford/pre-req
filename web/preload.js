@@ -264,14 +264,12 @@
 			const match = [...links].find((x) => x.href === link.href);
 			if (match != null) {
 				obj[sSheet] = match.sheet;
-				obj[sModule] = cssLoader(match.sheet, src);
 				resolve();
 			} else {
 				document.head.appendChild(link);
 
 				link.onload = () => {
 					obj[sSheet] = link.sheet;
-					obj[sModule] = cssLoader(match.sheet, src);
 					resolve();
 				};
 				link.onerror = (event) => {

@@ -6,6 +6,7 @@
 	//symbols
 	const sDeps = "/deps";
 	const sCode = "/code";
+	const sSheet = "/sheet";
 	const sModule = "/module";
 	const sPromise = "/promise";
 	//css loader
@@ -166,8 +167,15 @@
 			} else if (data.url.endsWith(".json")) {
 				data.obj[sModule] = JSON.parse(data.obj[sCode]);
 			} else if (data.url.endsWith(".css")) {
-				data.obj[sModule] = cssLoader(data.obj[sCode], data.url);
-				data.obj[sCode].disabled = false;
+				if (!data.obj[sSheet]) {
+					const style = document.createElement("style");
+					style.type = "text/css";
+					style.innerText = data.obj[sCode];
+					document.head.appendChild(style);
+					data.obj[sSheet] = style.sheet;
+				}
+
+				data.obj[sModule] = cssLoader(data.obj[sSheet], data.url);
 			}
 		}
 
@@ -255,14 +263,15 @@
 			const links = document.querySelectorAll("link[rel='stylesheet']");
 			const match = [...links].find((x) => x.href === link.href);
 			if (match != null) {
-				obj[sCode] = match.sheet;
+				obj[sSheet] = match.sheet;
+				obj[sModule] = cssLoader(match.sheet, src);
 				resolve();
 			} else {
 				document.head.appendChild(link);
 
 				link.onload = () => {
-					obj[sCode] = link.sheet;
-					link.sheet.disabled = true;
+					obj[sSheet] = link.sheet;
+					obj[sModule] = cssLoader(match.sheet, src);
 					resolve();
 				};
 				link.onerror = (event) => {

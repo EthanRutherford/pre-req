@@ -5,8 +5,8 @@ const detective = require("detective");
 const {minify} = require("uglify-es");
 const nodeLibs = require("node-libs-browser");
 const path = require("path");
-const fs = require("./async-fs");
-const {all, each} = require("./async-util");
+const fs = require("./lib/async-fs");
+const {all, each} = require("./lib/async-util");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;

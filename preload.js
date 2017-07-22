@@ -7,6 +7,7 @@ const nodeLibs = require("node-libs-browser");
 const path = require("path");
 const fs = require("./lib/async-fs");
 const {all, each} = require("./lib/async-util");
+const fillTemplate = require("./lib/html");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
@@ -323,17 +324,36 @@ async function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	return {vfs, packages};
 }
 
-async function writeDeps(packageDir, vfs) {
+async function buildTemplate(absRoot, preloadPath, page, deps) {
+	const templatePath = path.resolve(page.template);
+	const filePath = path.resolve(absRoot + "/" + page.html);
+	const absMain = resolveFileRelative(absRoot, null, page.main);
+	const mainPath = absoluteToRelative(absRoot, absMain);
+	const template = (await fs.readFile(templatePath)).toString();
+
+	const content = fillTemplate(template, preloadPath, deps, mainPath);
+	await fs.writeFile(filePath, content);
+}
+
+async function writeDepsAndHtml(absRoot, packageDir, vfs, html = []) {
 	if (!vfs.dirty) {
 		return;
 	}
 	delete vfs.dirty;
 
-	try {
-		await fs.writeFile(packageDir + "/.deps.json", JSON.stringify(vfs));
-	} catch (error) {
-		console.error(`ERROR: ${error.message}`);
+	const deps = JSON.stringify(vfs);
+	const preloadPath = absoluteToRelative(absRoot, packageDir) + "/preload.js";
+
+	const jobs = [];
+	jobs.push(fs.writeFile(packageDir + "/.deps.json", deps));
+
+	for (const page of html) {
+		jobs.push(buildTemplate(absRoot, preloadPath, page, deps));
 	}
+
+	await each(jobs, null, (error) => {
+		console.error(`ERROR: ${error.message}`);
+	});
 }
 
 async function writePackages(packageDir, packages) {
@@ -365,7 +385,7 @@ async function writePackages(packageDir, packages) {
 //webroot is the relative path to the webroot folder
 //entrypoints are paths to the entry points, relative to webroot
 //outputDir is directory where preload_modules will be stored
-async function build({webroot, entryPoints, outputDir}) {
+async function build({webroot, entryPoints, outputDir, html}) {
 	const absRoot = path.resolve(webroot);
 	const absDir = path.resolve(outputDir);
 
@@ -374,7 +394,7 @@ async function build({webroot, entryPoints, outputDir}) {
 		const output = await rebuildCacheAndVFS(absRoot, absDir, entryPoints);
 
 		const jobs = [
-			writeDeps(packageDir, output.vfs),
+			writeDepsAndHtml(absRoot, packageDir, output.vfs, html),
 			writePackages(packageDir, output.packages),
 			saveCache(),
 		];
@@ -439,6 +459,18 @@ async function loadConfig() {
 			"defaulting to [\"/index\"]"
 		);
 		config.entryPoints = ["/index"];
+	}
+
+	if (config.html) {
+		for (const html of config.html) {
+			if (!html.main) {
+				throw new Error("bad html config: missing main");
+			} else if (!html.html) {
+				throw new Error("bad html config: missing html");
+			} else if (!html.template) {
+				throw new Error("bad html config: missing template");
+			}
+		}
 	}
 
 	return config;

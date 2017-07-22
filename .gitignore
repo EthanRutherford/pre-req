@@ -48,5 +48,6 @@ Temporary Items
 
 node_modules
 test
+templates
 preload.config.json
 .cache

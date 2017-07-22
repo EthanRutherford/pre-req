@@ -409,9 +409,10 @@ async function clean({outputDir}) {
 	const absDir = path.resolve(outputDir);
 	const packageDir = absDir + "/preload_modules";
 	const files = new Set(await fs.readdir(packageDir));
+	const cachepath = __dirname + "/.cache";
 
 	const jobs = [];
-	jobs.push(fs.unlink(path.resolve("./.cache")));
+	jobs.push(fs.unlink(cachepath));
 	for (const filename of files) {
 		const filepath = `${packageDir}/${filename}`;
 		jobs.push(fs.unlink(filepath));

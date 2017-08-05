@@ -11,7 +11,7 @@ const fillTemplate = require("./lib/html");
 
 const preloadRegex = /\/\/#[ \t]+preload[ \t]+(\S*)/g;
 const envRegex = /process.env.NODE_ENV/g;
-let cache = {files: {}, packages: {}, dirty: false};
+let cache = {files: {}, templates: {}, packages: {}, dirty: false};
 
 const sDeps = "/deps";
 const sCode = "/code";
@@ -109,6 +109,20 @@ async function getJSON(file) {
 		console.error(`ERROR: ${error.message}`);
 		return "";
 	}
+}
+
+async function getTemplate(templatePath) {
+	if (cache.templates[templatePath] != null) {
+		return {
+			content: cache.templates[templatePath],
+			dirty: false,
+		};
+	}
+
+	return {
+		content: (await fs.readFile(templatePath)).toString(),
+		dirty: true,
+	};
 }
 
 function calcMap(browser, absRoot, metaPath, entry) {
@@ -231,13 +245,18 @@ function resolvePackFiles(absRoot, packName, prevFile, files) {
 	return results;
 }
 
-async function rebuildCacheAndVFS(absRoot, absDir, entries) {
+async function rebuildCacheAndVFS(absRoot, absDir, entries, html) {
 	let outputDir = absoluteToRelative(absRoot, absDir);
 	outputDir += outputDir.endsWith("/") ? "" : "/";
 
 	const staleFiles = new Set(Object.keys(cache.files));
 
-	const clonedCache = {files: {}, packages: {}, dirty: false};
+	const clonedCache = {
+		files: {},
+		templates: {},
+		packages: {},
+		dirty: false,
+	};
 	const packages = {};
 	const vfs = {files: {}, packages: {}, outputDir};
 
@@ -309,6 +328,13 @@ async function rebuildCacheAndVFS(absRoot, absDir, entries) {
 		stack.push(...deps);
 	}
 
+	for (const page of html) {
+		const templatePath = path.resolve(page.template);
+		const template = await getTemplate(templatePath);
+		clonedCache.templates[templatePath] = template.content;
+		page.dirty = template.dirty;
+	}
+
 	vfs.dirty = cache.dirty;
 
 	for (const file in staleFiles) {
@@ -324,31 +350,34 @@ async function rebuildCacheAndVFS(absRoot, absDir, entries) {
 	return {vfs, packages};
 }
 
-async function buildTemplate(absRoot, preloadPath, page, deps) {
-	const templatePath = path.resolve(page.template);
+async function buildTemplate(absRoot, preloadPath, page, deps, wasDirty) {
 	const filePath = path.resolve(absRoot + "/" + page.html);
 	const absMain = resolveFileRelative(absRoot, null, page.main);
 	const mainPath = absoluteToRelative(absRoot, absMain);
-	const template = (await fs.readFile(templatePath)).toString();
+	const template = cache.templates[path.resolve(page.template)];
 
-	const content = fillTemplate(template, preloadPath, deps, mainPath);
-	await fs.writeFile(filePath, content);
+	if (page.dirty || wasDirty) {
+		const content = fillTemplate(template, preloadPath, deps, mainPath);
+		await fs.writeFile(filePath, content);
+		delete page.dirty;
+	}
 }
 
 async function writeDepsAndHtml(absRoot, packageDir, vfs, html = []) {
-	if (!vfs.dirty) {
-		return;
-	}
+	const wasDirty = vfs.dirty;
 	delete vfs.dirty;
 
 	const deps = JSON.stringify(vfs);
 	const preloadPath = absoluteToRelative(absRoot, packageDir) + "/preload.js";
 
 	const jobs = [];
-	jobs.push(fs.writeFile(packageDir + "/.deps.json", deps));
+
+	if (wasDirty) {
+		jobs.push(fs.writeFile(packageDir + "/.deps.json", deps));
+	}
 
 	for (const page of html) {
-		jobs.push(buildTemplate(absRoot, preloadPath, page, deps));
+		jobs.push(buildTemplate(absRoot, preloadPath, page, deps, wasDirty));
 	}
 
 	await each(jobs, null, (error) => {
@@ -391,7 +420,7 @@ async function build({webroot, entryPoints, outputDir, html}) {
 
 	try {
 		const packageDir = absDir + "/preload_modules";
-		const output = await rebuildCacheAndVFS(absRoot, absDir, entryPoints);
+		const output = await rebuildCacheAndVFS(absRoot, absDir, entryPoints, html);
 
 		const jobs = [
 			writeDepsAndHtml(absRoot, packageDir, output.vfs, html),
@@ -487,6 +516,10 @@ function removeFile(file) {
 	cache.dirty = true;
 }
 
+function removeTemplate(template) {
+	delete cache.templates[template];
+}
+
 function removePackage(packName) {
 	for (const file of cache.packages[packName].files) {
 		delete cache.files[file];
@@ -511,7 +544,13 @@ async function restoreCache({webroot}) {
 		const [stats, string] = await all(jobs);
 
 		const reviver = (k, v) => k === sDeps ? new JSONSet(v) : v;
-		cache = JSON.parse(string, reviver);
+		const prevCache = JSON.parse(string, reviver);
+		cache = {
+			files: prevCache.files || {},
+			templates: prevCache.templates || {},
+			packages: prevCache.packages || {},
+			dirty: prevCache.dirty || false,
+		};
 		const lastRun = stats.mtimeMs;
 
 		const packages = Object.keys(cache.packages);
@@ -524,6 +563,18 @@ async function restoreCache({webroot}) {
 				}
 			} catch (error) {
 				removePackage(packName);
+			}
+		}
+
+		const templates = Object.keys(cache.templates);
+		for (const template of templates) {
+			try {
+				const mtime = (await fs.stat(path.resolve(template))).mtimeMs;
+				if (mtime > lastRun) {
+					removeTemplate(template);
+				}
+			} catch (error) {
+				removeTemplate(template);
 			}
 		}
 

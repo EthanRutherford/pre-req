@@ -16,6 +16,28 @@ let cache = {files: {}, templates: {}, packages: {}, dirty: false};
 const sDeps = "/deps";
 const sCode = "/code";
 
+/**
+ * @typedef VFS
+ * @property {any} files
+ * @property {any} packages
+ * @property {string} outputDir
+ * @property {boolean=} dirty
+*/
+/**
+ * @typedef HTMLTemplate
+ * @property {string} main
+ * @property {string} html
+ * @property {string} template
+ * @property {boolean=} dirty
+*/
+/**
+ * @typedef Config
+ * @property {string=} webroot
+ * @property {string=} outputDir
+ * @property {string[]=} entryPoints
+ * @property {HTMLTemplate[]=} html
+*/
+
 const env = process.env.NODE_ENV; //eslint-disable-line no-process-env
 const minifyOptions = {
 	compress: {
@@ -44,6 +66,12 @@ class JSONSet extends Set {
 	}
 }
 
+/**
+ * add path to vfs
+ * @param {any} data
+ * @param {string} pathName
+ * @returns {any}
+ */
 function addPath(data, pathName) {
 	pathName = pathName.substr(1);
 	if (pathName === "") return data;
@@ -57,6 +85,13 @@ function addPath(data, pathName) {
 	return data;
 }
 
+/**
+ * resolve a path relative to another path
+ * @param {string} root
+ * @param {string} file
+ * @param {string} next
+ * @returns {string}
+ */
 function resolveFileRelative(root, file, next) {
 	if (next[0] === "/") {
 		next = root + next;
@@ -67,21 +102,42 @@ function resolveFileRelative(root, file, next) {
 	return require.resolve(next).replace(/\\/g, "/");
 }
 
+/**
+ * get the path to a package from a filepath
+ * @param {string} absFile
+ * @returns {string}
+ */
 function getPackageRoot(absFile) {
 	const parts = absFile.replace(/\\/g, "/").split("/");
 	return parts.slice(0, parts.findIndex((x) => x === "node_modules") + 2).join("/");
 }
 
+/**
+ * checks if the given path is a package
+ * @param {string} name
+ * @returns {boolean}
+ */
 function isPackage(name) {
 	return !(name[0] === "/" || name.startsWith("./") || name.startsWith("../"));
 }
 
+/**
+ * get relative filepath given the absolute root and path
+ * @param {string} root
+ * @param {string} file
+ * @returns {string}
+ */
 function absoluteToRelative(root, file) {
 	const rel = path.relative(root, file).replace(/\\/g, "/");
 	if (rel.startsWith("..")) throw new Error("path outside webroot");
 	return "/" + rel;
 }
 
+/**
+ * find all dependencies
+ * @param {string} code
+ * @returns {string[]}
+ */
 function parseDeps(code) {
 	const deps = new Set(detective(code));
 	let match;
@@ -92,25 +148,40 @@ function parseDeps(code) {
 	return [...deps];
 }
 
+/**
+ * get dependencies from file
+ * @param {string} src
+ * @returns {Promise<{code: string, deps: string[]}>}
+ */
 async function getDependencies(src) {
 	try {
 		const code = (await fs.readFile(src)).toString();
 		return {code, deps: parseDeps(code)};
 	} catch (error) {
 		console.error(`ERROR: ${error.message}`);
-		return {};
+		return {code: "", deps: []};
 	}
 }
 
+/**
+ * get content of json file
+ * @param {string} file
+ * @returns {Promise<string>}
+ */
 async function getJSON(file) {
 	try {
-		return JSON.stringify(JSON.parse(await fs.readFile(file)));
+		return JSON.stringify(JSON.parse((await fs.readFile(file)).toString()));
 	} catch (error) {
 		console.error(`ERROR: ${error.message}`);
 		return "";
 	}
 }
 
+/**
+ * get the content of a template
+ * @param {string} templatePath
+ * @returns {Promise<{content: string, dirty: boolean}>}
+ */
 async function getTemplate(templatePath) {
 	if (cache.templates[templatePath] != null) {
 		return {
@@ -125,6 +196,14 @@ async function getTemplate(templatePath) {
 	};
 }
 
+/**
+ * get the mapping of browser proxy paths
+ * @param {any} browser
+ * @param {string} absRoot
+ * @param {string} metaPath
+ * @param {string} entry
+ * @returns {{[x: string]: string}}
+ */
 function calcMap(browser, absRoot, metaPath, entry) {
 	if (browser == null) return {};
 	if (typeof browser === "string") {
@@ -141,10 +220,17 @@ function calcMap(browser, absRoot, metaPath, entry) {
 	return map;
 }
 
+/**
+ * ensure package is loaded into cache
+ * @param {string} name
+ * @param {string} absRoot
+ * @param {string} relFile
+ * @returns {Promise<string>}
+ */
 async function enterPackage(name, absRoot, relFile) {
 	if (!(name in cache.packages)) {
 		const metaPath = require.resolve(absRoot + "/package.json");
-		const meta = JSON.parse(await fs.readFile(metaPath));
+		const meta = JSON.parse((await fs.readFile(metaPath)).toString());
 		const absMainEntry = require.resolve(absRoot);
 		const mainEntry = absoluteToRelative(absRoot, absMainEntry);
 
@@ -161,6 +247,13 @@ async function enterPackage(name, absRoot, relFile) {
 	return name + relFile;
 }
 
+/**
+ * parse individual file from package
+ * @param {string} packName
+ * @param {string} packRoot
+ * @param {string} relFile
+ * @returns {Promise<void>}
+ */
 async function parsePackFile(packName, packRoot, relFile) {
 	const pack = cache.packages[packName];
 	const absFileTmp = `${packRoot}/${relFile.split("/").slice(1).join("/")}`;
@@ -183,6 +276,12 @@ async function parsePackFile(packName, packRoot, relFile) {
 	obj[sDeps] = new JSONSet(data.deps);
 }
 
+/**
+ * parse individual file
+ * @param {string} absRoot
+ * @param {string} relFile
+ * @returns {Promise<void>}
+ */
 async function parseFile(absRoot, relFile) {
 	const absFile = absRoot + relFile;
 
@@ -192,6 +291,13 @@ async function parseFile(absRoot, relFile) {
 	obj[sDeps] = new JSONSet(data.deps);
 }
 
+/**
+ * resolve a relative path to a file location
+ * @param {string} absRoot
+ * @param {string} prevFile
+ * @param {string} curFile
+ * @returns {{isPackage: boolean, relFile: string, packRoot: string}}
+ */
 function resolveFile(absRoot, prevFile, curFile) {
 	if (isPackage(curFile)) {
 		const name = curFile.split("/")[0];
@@ -213,6 +319,13 @@ function resolveFile(absRoot, prevFile, curFile) {
 	return {isPackage: false, relFile, packRoot: null};
 }
 
+/**
+ * resolves multiple files
+ * @param {string} absRoot
+ * @param {string} prevFile
+ * @param {string[]} files
+ * @returns {{isPackage: boolean, relFile: string, packRoot: string}[]}
+ */
 function resolveFiles(absRoot, prevFile, files) {
 	prevFile = absRoot + prevFile;
 	const results = [];
@@ -226,6 +339,14 @@ function resolveFiles(absRoot, prevFile, files) {
 	return results;
 }
 
+/**
+ * resolves files in a package
+ * @param {string} absRoot
+ * @param {string} packName
+ * @param {string} prevFile
+ * @param {string[]} files
+ * @returns {{isPackage: boolean, relFile: string, packRoot: string}[]}
+ */
 function resolvePackFiles(absRoot, packName, prevFile, files) {
 	prevFile = `${absRoot}/${prevFile.split("/").slice(1).join("/")}`;
 	const results = [];
@@ -245,6 +366,14 @@ function resolvePackFiles(absRoot, packName, prevFile, files) {
 	return results;
 }
 
+/**
+ * rebuilds the cache, filling in any holes caused by changed files
+ * @param {string} absRoot
+ * @param {string} absDir
+ * @param {string[]} entries
+ * @param {HTMLTemplate[]} html
+ * @returns {Promise<{vfs: VFS, packages}>}
+ */
 async function rebuildCacheAndVFS(absRoot, absDir, entries, html) {
 	let outputDir = absoluteToRelative(absRoot, absDir);
 	outputDir += outputDir.endsWith("/") ? "" : "/";
@@ -350,6 +479,15 @@ async function rebuildCacheAndVFS(absRoot, absDir, entries, html) {
 	return {vfs, packages};
 }
 
+/**
+ * builds html from a template
+ * @param {string} absRoot
+ * @param {string} preloadPath
+ * @param {HTMLTemplate} page
+ * @param {string} deps
+ * @param {boolean} wasDirty
+ * @returns {Promise<void>}
+ */
 async function buildTemplate(absRoot, preloadPath, page, deps, wasDirty) {
 	const filePath = path.resolve(absRoot + "/" + page.html);
 	const absMain = resolveFileRelative(absRoot, null, page.main);
@@ -363,6 +501,14 @@ async function buildTemplate(absRoot, preloadPath, page, deps, wasDirty) {
 	}
 }
 
+/**
+ * writes output files
+ * @param {string} absRoot
+ * @param {string} packageDir
+ * @param {VFS} vfs
+ * @param {HTMLTemplate[]} html
+ * @returns {Promise<void>}
+ */
 async function writeDepsAndHtml(absRoot, packageDir, vfs, html = []) {
 	const wasDirty = vfs.dirty;
 	delete vfs.dirty;
@@ -385,6 +531,12 @@ async function writeDepsAndHtml(absRoot, packageDir, vfs, html = []) {
 	});
 }
 
+/**
+ * writes output packages
+ * @param {string} packageDir
+ * @param {any} packages
+ * @returns {Promise<void>}
+ */
 async function writePackages(packageDir, packages) {
 	const files = new Set(await fs.readdir(packageDir));
 	files.delete(".deps.json");
@@ -411,10 +563,15 @@ async function writePackages(packageDir, packages) {
 	});
 }
 
-//webroot is the relative path to the webroot folder
-//entrypoints are paths to the entry points, relative to webroot
-//outputDir is directory where preload_modules will be stored
-async function build({webroot, entryPoints, outputDir, html}) {
+/**
+ * webroot is the relative path to the webroot folder
+ *
+ * entrypoints are paths to the entry points, relative to webroot
+ *
+ * outputDir is directory where preload_modules will be stored
+ * @returns {Promise<void>}
+ */
+async function build(/** @type {Config} */ {webroot, entryPoints, outputDir, html}) {
 	const absRoot = path.resolve(webroot);
 	const absDir = path.resolve(outputDir);
 
@@ -434,7 +591,11 @@ async function build({webroot, entryPoints, outputDir, html}) {
 	}
 }
 
-async function clean({outputDir}) {
+/**
+ * clean the outputDir
+ * @returns {Promise<void>}
+ */
+async function clean(/** @type {Config} */ {outputDir}) {
 	const absDir = path.resolve(outputDir);
 	const packageDir = absDir + "/preload_modules";
 	const files = new Set(await fs.readdir(packageDir));
@@ -452,7 +613,11 @@ async function clean({outputDir}) {
 	});
 }
 
-async function init({outputDir}) {
+/**
+ * make sure the outputDir exists and has preload.js installed
+ * @returns {Promise<void>}
+ */
+async function init(/** @type {Config} */ {outputDir}) {
 	const absDir = path.resolve(outputDir);
 	const packageDir = absDir + "/preload_modules";
 	try {
@@ -469,9 +634,13 @@ async function init({outputDir}) {
 	fs.createReadStream(preloadWeb).pipe(fs.createWriteStream(preloadScript));
 }
 
+/**
+ * load the config
+ * @returns {Promise<Config>}
+ */
 async function loadConfig() {
 	const configPath = path.resolve("preload.config.json");
-	const config = JSON.parse(await fs.readFile(configPath));
+	const config = JSON.parse((await fs.readFile(configPath)).toString());
 
 	if (!config.webroot) {
 		throw new Error("webroot missing from .preload-config");
@@ -506,20 +675,39 @@ async function loadConfig() {
 	return config;
 }
 
+/**
+ * saves the cache for next time
+ * @returns {Promise<void>}
+ */
 async function saveCache() {
 	const string = JSON.stringify(cache);
 	await fs.writeFile(__dirname + "/.cache", string);
 }
 
+/**
+ * remove the file from the cache
+ * @param {string} file
+ * @returns {void}
+ */
 function removeFile(file) {
 	delete cache.files[file];
 	cache.dirty = true;
 }
 
+/**
+ * remove the template from the cache
+ * @param {string} template
+ * @returns {void}
+ */
 function removeTemplate(template) {
 	delete cache.templates[template];
 }
 
+/**
+ * remove the package from the cache
+ * @param {string} packName
+ * @returns {void}
+ */
 function removePackage(packName) {
 	for (const file of cache.packages[packName].files) {
 		delete cache.files[file];
@@ -527,6 +715,11 @@ function removePackage(packName) {
 	delete cache.packages[packName];
 }
 
+/**
+ * resolve the location of the package's package.json file
+ * @param {string} packName
+ * @returns {string}
+ */
 function getPackageMeta(packName) {
 	if (packName in nodeLibs) {
 		const packRoot = getPackageRoot(nodeLibs[packName]);
@@ -535,7 +728,11 @@ function getPackageMeta(packName) {
 	return require.resolve(`${packName}/package.json`);
 }
 
-async function restoreCache({webroot}) {
+/**
+ * restores the cache from last time
+ * @returns {Promise<void>}
+ */
+async function restoreCache(/** @type {Config} */ {webroot}) {
 	const absRoot = path.resolve(webroot);
 
 	const cachepath = __dirname + "/.cache";
@@ -557,6 +754,7 @@ async function restoreCache({webroot}) {
 		for (const packName of packages) {
 			try {
 				const metaFile = getPackageMeta(packName);
+				// @ts-ignore Stat interface is missing member
 				const mtime = (await fs.stat(metaFile)).mtimeMs;
 				if (mtime > lastRun) {
 					removePackage(packName);
@@ -569,6 +767,7 @@ async function restoreCache({webroot}) {
 		const templates = Object.keys(cache.templates);
 		for (const template of templates) {
 			try {
+				// @ts-ignore Stat interface is missing member
 				const mtime = (await fs.stat(path.resolve(template))).mtimeMs;
 				if (mtime > lastRun) {
 					removeTemplate(template);
@@ -582,6 +781,7 @@ async function restoreCache({webroot}) {
 		for (const file of files) {
 			if (file[0] !== "/") continue;
 			try {
+				// @ts-ignore Stat interface is missing member
 				const mtime = (await fs.stat(absRoot + file)).mtimeMs;
 				if (mtime > lastRun) {
 					removeFile(file);
@@ -599,6 +799,10 @@ async function restoreCache({webroot}) {
 	}
 }
 
+/**
+ * main entry point to the program
+ * @param {string=} command
+ */
 async function main(command) {
 	try {
 		console.log(`running ${command}...`);

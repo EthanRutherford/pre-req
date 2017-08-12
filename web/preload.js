@@ -90,23 +90,23 @@
 	//executes the code, and sets module exports
 	function execute(code, src, obj, pack) {
 		//initialize the module object
-		const module = {};
-		Object.defineProperty(module, "exports", {
+		const moduleProxy = {};
+		Object.defineProperty(moduleProxy, "exports", {
 			get: () => obj[sModule],
 			set: (value) => obj[sModule] = value,
 		});
 		//create the executor
 		const executor = getModuleExecutor(code, src, pack.name);
 		//construct and execute the function
-		executor((dep) => requireCore(dep, src, pack), module, module.exports);
+		executor((dep) => requireCore(dep, src, pack), moduleProxy, moduleProxy.exports);
 		//return module exports
-		return module.exports;
+		return moduleProxy.exports;
 	}
 	//call to load the resource
 	function load(src) {
 		return fetch(new Request(src, {method: "GET"}));
 	}
-	//looks for a .js or .json path
+	//resolves js, json, or css paths
 	function resolvePath(pack, pathName) {
 		if (
 			!pathName.endsWith(".js") &&
@@ -332,7 +332,7 @@
 			return requireCore(src, this.location.pathname);
 		});
 	};
-	//moethod which provides support for defining a css loader
+	//method which provides support for defining a css loader
 	//the loader function should accept a cssStyleSheet object and url,
 	//and return an object which will be passed into dependent js code
 	const onCss = (loader) => {

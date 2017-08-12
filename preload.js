@@ -509,7 +509,7 @@ async function buildTemplate(absRoot, preloadPath, page, deps, wasDirty) {
  * @param {HTMLTemplate[]} html
  * @returns {Promise<void>}
  */
-async function writeDepsAndHtml(absRoot, packageDir, vfs, html = []) {
+async function writeDepsAndHtml(absRoot, packageDir, vfs, html) {
 	const wasDirty = vfs.dirty;
 	delete vfs.dirty;
 
@@ -650,7 +650,7 @@ async function loadConfig() {
 			"outputDir not specified in .preload-config",
 			"defaulting to webroot"
 		);
-		config.output = config.webroot;
+		config.outputDir = config.webroot;
 	}
 	if (!config.entryPoints) {
 		console.warn(
@@ -659,16 +659,17 @@ async function loadConfig() {
 		);
 		config.entryPoints = ["/index"];
 	}
+	if (!config.html) {
+		config.html = [];
+	}
 
-	if (config.html) {
-		for (const html of config.html) {
-			if (!html.main) {
-				throw new Error("bad html config: missing main");
-			} else if (!html.html) {
-				throw new Error("bad html config: missing html");
-			} else if (!html.template) {
-				throw new Error("bad html config: missing template");
-			}
+	for (const html of config.html) {
+		if (!html.main) {
+			throw new Error("bad html config: missing main");
+		} else if (!html.html) {
+			throw new Error("bad html config: missing html");
+		} else if (!html.template) {
+			throw new Error("bad html config: missing template");
 		}
 	}
 

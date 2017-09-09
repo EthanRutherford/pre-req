@@ -38,7 +38,7 @@ const sCode = "/code";
  * @property {HTMLTemplate[]=} html
 */
 
-const env = process.env.NODE_ENV; //eslint-disable-line no-process-env
+const env = `"${process.env.NODE_ENV}"`; //eslint-disable-line no-process-env
 const minifyOptions = {
 	compress: {
 		dead_code: true, //eslint-disable-line camelcase
@@ -681,6 +681,7 @@ async function loadConfig() {
  * @returns {Promise<void>}
  */
 async function saveCache() {
+	cache.env = env;
 	const string = JSON.stringify(cache);
 	await fs.writeFile(__dirname + "/.cache", string);
 }
@@ -750,6 +751,11 @@ async function restoreCache(/** @type {Config} */ {webroot}) {
 			dirty: prevCache.dirty || false,
 		};
 		const lastRun = stats.mtimeMs;
+
+		if (cache.env !== env) {
+			//if the environment has changed, packages need to be rebuilt
+			cache.packages = [];
+		}
 
 		const packages = Object.keys(cache.packages);
 		for (const packName of packages) {

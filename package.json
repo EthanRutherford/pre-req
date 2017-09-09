@@ -1,6 +1,6 @@
 {
   "name": "pre-req",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Build dependency graphs and bundle npm modules to provide an implementation of require in the browser",
   "main": "preload.js",
   "scripts": {
@@ -12,10 +12,10 @@
   "dependencies": {
     "detective": "^4.5.0",
     "node-libs-browser": "^2.0.0",
-    "uglify-es": "^3.0.27"
+    "uglify-es": "^3.0.28"
   },
   "devDependencies": {
-    "@types/node": "^8.0.20"
+    "@types/node": "^8.0.28"
   },
   "bin": {
     "preload": "./preload.js"

@@ -752,9 +752,11 @@ async function restoreCache(/** @type {Config} */ {webroot}) {
 		};
 		const lastRun = stats.mtimeMs;
 
-		if (cache.env !== env) {
+		if (prevCache.env !== env) {
 			//if the environment has changed, packages need to be rebuilt
-			cache.packages = [];
+			for (const packName of Object.keys(cache.packages)) {
+				removePackage(packName);
+			}
 		}
 
 		const packages = Object.keys(cache.packages);

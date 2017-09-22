@@ -34,8 +34,8 @@ const sCode = "/code";
  * @typedef Config
  * @property {string=} webroot
  * @property {string=} outputDir
- * @property {string[]=} entryPoints
- * @property {HTMLTemplate[]=} html
+ * @property {string[]} entryPoints
+ * @property {HTMLTemplate[]} html
 */
 
 const env = `"${process.env.NODE_ENV}"`; //eslint-disable-line no-process-env
@@ -202,19 +202,30 @@ async function getTemplate(templatePath) {
  * @param {string} absRoot
  * @param {string} metaPath
  * @param {string} entry
- * @returns {{[x: string]: string}}
+ * @returns {{files: {[x: string]: string}, packages: {[x: string]: string}}}
  */
-function calcMap(browser, absRoot, metaPath, entry) {
-	if (browser == null) return {};
+function calcMap(browser, absRoot, entry) {
+	if (browser == null) return {files: {}, packages: {}};
 	if (typeof browser === "string") {
-		browser = {[entry]: browser};
+		browser = {["." + entry]: browser};
 	}
 
-	const map = {};
+	const map = {files: {}, packages: {}};
 	for (const name of Object.keys(browser)) {
-		const absKey = resolveFileRelative(absRoot, metaPath, name);
-		const absVal = resolveFileRelative(absRoot, metaPath, browser[name]);
-		map[absKey] = absVal;
+		let value = browser[name];
+		if (value && value[0] !== ".") {
+			value = "./" + value;
+		}
+		if (name[0] === ".") {
+			const absKey = absRoot + name.slice(1);
+			const absVal = value ?
+				absRoot + value.slice(1) :
+				require.resolve("./lib/empty")
+			;
+			map.files[absKey] = absVal;
+		} else {
+			map.packages[name] = value;
+		}
 	}
 
 	return map;
@@ -237,7 +248,7 @@ async function enterPackage(name, absRoot, relFile) {
 		cache.packages[name] = {
 			entry: mainEntry,
 			files: [],
-			browserMap: calcMap(meta.browser, absRoot, metaPath, mainEntry),
+			browserMap: calcMap(meta.browser, absRoot, mainEntry),
 			dirty: false,
 		};
 	}
@@ -257,7 +268,7 @@ async function enterPackage(name, absRoot, relFile) {
 async function parsePackFile(packName, packRoot, relFile) {
 	const pack = cache.packages[packName];
 	const absFileTmp = `${packRoot}/${relFile.split("/").slice(1).join("/")}`;
-	const absFile = pack.browserMap[absFileTmp] || absFileTmp;
+	const absFile = pack.browserMap.files[absFileTmp] || absFileTmp;
 
 	pack.dirty = true;
 	pack.files.push(relFile);
@@ -266,14 +277,38 @@ async function parsePackFile(packName, packRoot, relFile) {
 	//json files don't have deps or get minified
 	if (relFile.endsWith(".json")) {
 		obj[sCode] = await getJSON(absFile);
+		obj[sDeps] = new JSONSet();
 		return;
 	}
 
 	const data = await getDependencies(absFile);
-	const code = data.code.replace(envRegex, env);
+	let code = data.code.replace(envRegex, env);
+	const deps = new JSONSet(data.deps);
+	for (const dep of [...deps]) {
+		if (isPackage(dep)) {
+			if (dep === "fs") {
+				console.log(absFile);
+			}
+
+			const packName = dep.split("/")[0];
+			if (packName in pack.browserMap.packages) {
+				let val = pack.browserMap.packages[packName];
+				const replacer = new RegExp(`require\\(['"]${dep}['"]\\)`, "g");
+
+				if (val === false) {
+					code = code.replace(replacer, "{}");
+				} else {
+					val = val.slice(1);
+					deps.add(val);
+					code = code.replace(replacer, `require("${val}")`);
+				}
+			}
+		}
+	}
+
 	const minified = minify(code, minifyOptions);
 	obj[sCode] = minified.code;
-	obj[sDeps] = new JSONSet(data.deps);
+	obj[sDeps] = deps;
 }
 
 /**
@@ -648,14 +683,14 @@ async function loadConfig() {
 	if (!config.outputDir) {
 		console.warn(
 			"outputDir not specified in .preload-config",
-			"defaulting to webroot"
+			"defaulting to webroot",
 		);
 		config.outputDir = config.webroot;
 	}
 	if (!config.entryPoints) {
 		console.warn(
 			"entryPoints not specified in .preload-config",
-			"defaulting to [\"/index\"]"
+			"defaulting to [\"/index\"]",
 		);
 		config.entryPoints = ["/index"];
 	}
